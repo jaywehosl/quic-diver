@@ -54,12 +54,14 @@ type Result struct {
 	Journal *Journal
 	// Genesis — отпечаток сети. Он попадёт в конфиг каждого узла.
 	Genesis oplog.Fingerprint
-	// Working и Spare — ссылки владельца: рабочая и запасная.
-	Working string
-	Spare   string
-	// WorkingKey — приватный ключ рабочего владельца. Приложение держит его у себя, чтобы
-	// подписывать записи, не разбирая ссылку каждый раз.
+	// WorkingKey и SpareKey — приватные ключи владельцев, рабочий и запасной.
+	//
+	// Ссылки из них собираются потом, в самом конце развёртывания — см. IssueBundles. Здесь
+	// их нет намеренно: ссылка, выданная до появления первого узла, не содержит ни одного
+	// адреса, и её обладателю некуда идти. Именно так и вышло при первой обкатке — владелец
+	// со ссылкой на руках не мог подключиться к собственной сети.
 	WorkingKey ed25519.PrivateKey
+	SpareKey   ed25519.PrivateKey
 }
 
 // Create создаёт сеть.
@@ -115,38 +117,74 @@ func Create(p Params) (Result, error) {
 		}
 	}
 
-	fingerprint := j.Genesis()
-
-	working, err := ownerBundle(name, fingerprint, "владелец", workPriv, p.Password)
-	if err != nil {
-		return Result{}, err
-	}
-	spare, err := ownerBundle(name, fingerprint, "владелец-запасной", sparePriv, p.Password)
-	if err != nil {
-		return Result{}, err
-	}
-
 	return Result{
 		Journal:    j,
-		Genesis:    fingerprint,
-		Working:    working,
-		Spare:      spare,
+		Genesis:    j.Genesis(),
 		WorkingKey: workPriv,
+		SpareKey:   sparePriv,
 	}, nil
 }
 
-// ownerBundle собирает ссылку владельца.
+// IssueBundles выдаёт обе ссылки владельца по состоянию журнала.
 //
-// Узлов в ней нет: их ещё не существует. Клиент, разобравший такую ссылку, знает сеть и свой
-// ключ, но подключаться ему пока некуда — до тех пор, пока первый узел не поднимется и не
-// пришлёт снапшот со списком.
-func ownerBundle(network string, genesis oplog.Fingerprint, id string, priv ed25519.PrivateKey, password string) (string, error) {
-	return bundle.Encode(&bundle.Bundle{
+// # Почему в конце, а не при создании сети
+//
+// Ссылка — это ключ **и** способ до сети добраться: узлы, их адреса, параметры. При создании
+// сети узлов не существует ни одного, и ссылка выходит с пустым списком — ключ есть, идти
+// некуда. Ровно это и вышло при первой обкатке: владелец со ссылкой на руках не смог
+// подключиться к собственной сети, а после сброса приложения потерял к ней доступ совсем.
+//
+// Собранная после включения первого узла ссылка несёт и узлы, и потолки — то есть годится и
+// для работы, и для восстановления на другом устройстве.
+//
+// # Что в ней меняется, а что нет
+//
+// Ключи те же, что созданы в начале: они уже объявлены в генезисе, и заменить их нельзя, не
+// переписав сеть. Меняется только список узлов и параметры — то, что к моменту выдачи стало
+// известно.
+func IssueBundles(j *Journal, working, spare ed25519.PrivateKey, password string) (workingURI, spareURI string, err error) {
+	if j == nil || j.Genesis().IsZero() {
+		return "", "", ErrNoGenesis
+	}
+	st := j.State()
+	if len(st.NodesWithRole(oplog.RoleIngress)) == 0 {
+		return "", "", errors.New("ownerlog: в сети нет ни одного входного узла — ссылку выдавать рано")
+	}
+
+	workingURI, err = ownerBundle(j, "владелец", working, password)
+	if err != nil {
+		return "", "", err
+	}
+	spareURI, err = ownerBundle(j, "владелец-запасной", spare, password)
+	if err != nil {
+		return "", "", err
+	}
+	return workingURI, spareURI, nil
+}
+
+// ownerBundle собирает ссылку владельца по журналу.
+func ownerBundle(j *Journal, id string, priv ed25519.PrivateKey, password string) (string, error) {
+	st := j.State()
+
+	b := &bundle.Bundle{
 		Version:   bundle.Version,
-		Network:   network,
-		Genesis:   genesis,
+		Network:   st.Network(),
+		Genesis:   j.Genesis(),
 		Owner:     true,
 		ClientID:  id,
 		ClientKey: priv,
-	}, password)
+		// Потолки едут вместе с узлами: без них клиент поднимется на обычном Cubic, а человек
+		// будет уверен, что работает BRUTAL, который он задавал.
+		Settings:  st.Settings(),
+		HasEgress: len(st.NodesWithRole(oplog.RoleEgress)) > 0,
+	}
+	for _, n := range st.NodesWithRole(oplog.RoleIngress) {
+		b.Ingress = append(b.Ingress, bundle.Node{
+			ID:        n.ID,
+			Domain:    n.Domain,
+			Endpoints: n.Endpoints,
+			PublicKey: n.PublicKey,
+		})
+	}
+	return bundle.Encode(b, password)
 }

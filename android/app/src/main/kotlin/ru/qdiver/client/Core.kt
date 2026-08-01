@@ -99,6 +99,17 @@ object Core {
     fun createNetwork(name: String, password: String, up: Int, down: Int, mesh: Int): Created =
         Created.parse(Mobile.createNetwork(name, password, up.toLong(), down.toLong(), mesh.toLong()))
 
+    /**
+     * Выдаёт обе ссылки владельца — после того, как первый узел в сети.
+     *
+     * Раньше выдавать нечего: ссылка несёт не только ключ, но и узлы с их адресами, а до
+     * включения узла адресов не существует. Ключ без адреса никуда не ведёт.
+     *
+     * Долгий вызов — шифрование стоит около секунды на ссылку.
+     */
+    fun issueOwnerBundles(password: String): Created =
+        Created.parse(Mobile.issueOwnerBundles(password))
+
     /** Ключ развёртывания для нового узла. Быстро: чтение журнала и кодировка. */
     fun deployKey(id: String, domain: String, role: String): String =
         Mobile.deployKey(id, domain, role)

@@ -50,11 +50,17 @@ import kotlinx.coroutines.withContext
  * другими ключами и другим отпечатком. К чужим узлам она не подойдёт — у них в конфиге чужой
  * отпечаток. Он получит сеть без единого узла.
  *
- * Шаги идут строго по порядку, потому что каждый следующий опирается на предыдущий: пароль
- * нужен, чтобы зашифровать ссылки; ссылки нужно сохранить до того, как экран закроется; ключ
- * развёртывания собирается из отпечатка, которого до создания сети не существует.
+ * # Почему ссылки выдаются в самом конце
+ *
+ * Ссылка — это не только ключ, но и способ до сети добраться: узлы, их адреса, потолки. Пока
+ * первый узел не поднят, ничего этого не существует, и выданная в начале ссылка содержит ключ
+ * без единого адреса. Её обладателю некуда идти — и при первой обкатке вышло именно так:
+ * владелец со ссылкой на руках не смог подключиться к собственной сети.
+ *
+ * Поэтому порядок такой: параметры → пароль → развёртывание узла → включение узла → и только
+ * потом ссылки, собранные из журнала, где узел уже записан.
  */
-private enum class Step { PARAMS, PASSWORD, LINKS, CONFIRM, DEPLOY, WAITING, DONE }
+private enum class Step { PARAMS, PASSWORD, DEPLOY, WAITING, LINKS, CONFIRM, DONE }
 
 @Composable
 fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
@@ -177,13 +183,10 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                                     }
                                     busy = false
                                     res.onSuccess { created ->
-                                        working = created.working
-                                        spare = created.spare
                                         genesis = created.genesis
-                                        // Рабочая ссылка сразу становится своей: с этой минуты
-                                        // приложение — клиент собственной сети.
-                                        prefs.setNetwork(created.working, pass1)
-                                        step = Step.LINKS
+                                        // Ссылок пока нет: их не из чего собрать, пока в сети
+                                        // нет ни одного узла. Дальше — развёртывание.
+                                        step = Step.DEPLOY
                                     }.onFailure { problem = it.message ?: "сеть не создалась" }
                                 }
                             }
@@ -207,31 +210,60 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
             }
 
             Step.LINKS -> {
-                Text("Отпечаток сети", fontSize = 13.sp, color = Green)
+                LaunchedEffect(Unit) {
+                    if (working.isEmpty()) {
+                        busy = true
+                        val res = withContext(Dispatchers.IO) {
+                            runCatching { Core.issueOwnerBundles(pass1) }
+                        }
+                        busy = false
+                        res.onSuccess { issued ->
+                            working = issued.working
+                            spare = issued.spare
+                            // Рабочая ссылка сразу становится своей: с этой минуты приложение —
+                            // клиент собственной сети, и в ссылке уже есть куда идти.
+                            prefs.setNetwork(issued.working, pass1)
+                        }.onFailure { problem = it.message ?: "ссылки не собрались" }
+                    }
+                }
+
+                Text("Узел в сети: $adopted", fontSize = 13.sp, color = Green)
+                Text("Отпечаток сети", fontSize = 13.sp, color = Green,
+                    modifier = Modifier.padding(top = 12.dp))
                 Text(genesis, fontSize = 11.sp, color = Grey, modifier = Modifier.padding(bottom = 12.dp))
 
-                LinkBlock(
-                    title = "Рабочая ссылка",
-                    hint = "Уже сохранена в этом приложении. Пригодится, чтобы вернуть управление" +
-                        " после переустановки.",
-                    value = working,
-                    ctx = ctx,
-                )
-                LinkBlock(
-                    title = "Запасная ссылка",
-                    hint = "Унеси туда, куда не дотянется ни этот телефон, ни переписка. Это" +
-                        " единственный способ вернуть управление, если рабочая пропадёт.",
-                    value = spare,
-                    ctx = ctx,
-                )
+                if (busy) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(Modifier.padding(end = 12.dp), strokeWidth = 2.dp)
+                        Text("собираю ссылки…", fontSize = 14.sp)
+                    }
+                } else if (working.isNotEmpty()) {
+                    LinkBlock(
+                        title = "Рабочая ссылка",
+                        hint = "Уже сохранена в этом приложении. Пригодится, чтобы вернуть" +
+                            " управление после переустановки.",
+                        value = working,
+                        ctx = ctx,
+                    )
+                    LinkBlock(
+                        title = "Запасная ссылка",
+                        hint = "Унеси туда, куда не дотянется ни этот телефон, ни переписка. Это" +
+                            " единственный способ вернуть управление, если рабочая пропадёт." +
+                            " С устройства она уже стёрта.",
+                        value = spare,
+                        ctx = ctx,
+                    )
+                    Hint("Обе ссылки несут узлы сети и потолки скорости — по ним клиент найдёт," +
+                        " куда подключаться, даже на чистом устройстве.")
 
-                Button(
-                    onClick = { step = Step.CONFIRM },
-                    modifier = Modifier.fillMaxWidth().padding(top = 20.dp),
-                ) { Text("Сохранил обе") }
+                    Button(
+                        onClick = { step = Step.CONFIRM },
+                        modifier = Modifier.fillMaxWidth().padding(top = 20.dp),
+                    ) { Text("Сохранил обе") }
+                }
             }
 
-            Step.CONFIRM -> ConfirmStep(onConfirmed = { step = Step.DEPLOY })
+            Step.CONFIRM -> ConfirmStep(onConfirmed = { step = Step.DONE })
 
             Step.DEPLOY -> {
                 // Ключ собран из этих двух полей. Правка любого из них его обесценивает: строка
@@ -283,9 +315,9 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                         modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
                     ) { Text(if (stale) "Собрать заново" else "Собрать ключ развёртывания") }
                     OutlinedButton(
-                        onClick = { step = Step.LINKS },
+                        onClick = { step = Step.PARAMS },
                         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                    ) { Text("Назад к ссылкам") }
+                    ) { Text("Назад к параметрам сети") }
                 } else {
                     LinkBlock(
                         title = "Ключ развёртывания",
@@ -332,15 +364,15 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                 domain = domain.trim(),
                 code = code,
                 onProblem = { problem = it },
-                onAdopted = { adopted = it; step = Step.DONE },
+                onAdopted = { adopted = it; step = Step.LINKS },
                 onGiveUp = { step = Step.DEPLOY },
             )
 
             Step.DONE -> {
-                Text("Узел в сети", fontSize = 18.sp, color = Green)
-                Text(adopted, fontSize = 12.sp, color = Grey, modifier = Modifier.padding(top = 8.dp))
-                Hint("Сеть готова. Клиенты заводятся на экране управления; ссылка каждому" +
-                    " выдаётся своя.")
+                Text("Сеть готова", fontSize = 18.sp, color = Green)
+                Text("Узел $adopted", fontSize = 12.sp, color = Grey,
+                    modifier = Modifier.padding(top = 8.dp))
+                Hint("Клиенты заводятся на экране управления; ссылка каждому выдаётся своя.")
                 Button(onClick = onDone, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
                     Text("Готово")
                 }
@@ -498,10 +530,10 @@ private fun Mbps(label: String, value: String, onChange: (String) -> Unit) {
 private fun stepHint(step: Step): String = when (step) {
     Step.PARAMS -> "Шаг 1 из 5 · имя сети и потолки"
     Step.PASSWORD -> "Шаг 2 из 5 · пароль на ссылки"
-    Step.LINKS -> "Шаг 3 из 5 · две ссылки владельца"
-    Step.CONFIRM -> "Шаг 3 из 5 · подтверждение"
-    Step.DEPLOY -> "Шаг 4 из 5 · первый узел"
-    Step.WAITING -> "Шаг 5 из 5 · включение узла"
+    Step.DEPLOY -> "Шаг 3 из 5 · первый узел"
+    Step.WAITING -> "Шаг 4 из 5 · включение узла"
+    Step.LINKS -> "Шаг 5 из 5 · две ссылки владельца"
+    Step.CONFIRM -> "Шаг 5 из 5 · подтверждение"
     Step.DONE -> "Готово"
 }
 

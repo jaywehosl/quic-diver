@@ -2,6 +2,7 @@ package ownerlog
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"errors"
 	"strings"
 	"testing"
@@ -33,15 +34,43 @@ func created(t *testing.T, password string) Result {
 	return res
 }
 
-// Сеть создаётся на устройстве целиком: два ключа владельца, генезис, обе ссылки.
+// withNode добавляет в журнал узел — так, как это делает включение узла в сеть.
+func withNode(t *testing.T, res Result, id, domain string) {
+	t.Helper()
+
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("ключ узла: %v", err)
+	}
+	signer, err := oplog.NewMemorySigner(res.WorkingKey)
+	if err != nil {
+		t.Fatalf("ключ владельца: %v", err)
+	}
+	op, err := oplog.NewOp(signer, oplog.KindNodeAdd, res.Journal.Next(signer.KeyID()),
+		time.Date(2026, 8, 1, 13, 0, 0, 0, time.UTC), oplog.Node{
+			ID:        id,
+			PublicKey: oplog.PublicKey(pub),
+			Roles:     []string{"ingress"},
+			Domain:    domain,
+			Endpoints: []string{"203.0.113.1:443", "[2001:db8::1]:443"},
+		})
+	if err != nil {
+		t.Fatalf("запись об узле: %v", err)
+	}
+	if _, err := res.Journal.Append(op); err != nil {
+		t.Fatalf("узел не применился: %v", err)
+	}
+}
+
+// Сеть создаётся на устройстве целиком: два ключа владельца и генезис.
 func TestCreateMakesTwoOwnerKeys(t *testing.T) {
 	res := created(t, "пароль")
 
 	if res.Genesis.IsZero() {
 		t.Fatal("отпечаток не посчитан")
 	}
-	if res.Working == res.Spare {
-		t.Fatal("рабочая и запасная ссылки совпали — восстанавливаться будет нечем")
+	if bytes.Equal(res.WorkingKey, res.SpareKey) {
+		t.Fatal("рабочий и запасной ключи совпали — восстанавливаться будет нечем")
 	}
 
 	owners := res.Journal.State().Admins()
@@ -63,11 +92,36 @@ func TestCreateMakesTwoOwnerKeys(t *testing.T) {
 	}
 }
 
-// Обе ссылки открываются одним паролем и ведут в ту же сеть.
-func TestOwnerBundlesOpenWithPassword(t *testing.T) {
+// Ссылка выдаётся только после того, как в сети появился узел.
+//
+// Иначе получается ключ без адреса: владелец не может подключиться к собственной сети, а
+// потеряв журнал — теряет её совсем. Ровно это и вышло при первой обкатке.
+func TestBundlesRefusedWhileNetworkHasNoNodes(t *testing.T) {
 	res := created(t, "пароль")
 
-	for name, uri := range map[string]string{"рабочая": res.Working, "запасная": res.Spare} {
+	_, _, err := IssueBundles(res.Journal, res.WorkingKey, res.SpareKey, "пароль")
+	if err == nil {
+		t.Fatal("ссылка выдана для сети без единого узла")
+	}
+	if !strings.Contains(err.Error(), "входного узла") {
+		t.Fatalf("причина отказа невнятная: %v", err)
+	}
+}
+
+// Обе ссылки открываются одним паролем, ведут в ту же сеть и несут узлы с потолками.
+func TestOwnerBundlesCarryNodesAndSettings(t *testing.T) {
+	res := created(t, "пароль")
+	withNode(t, res, "node1", "one.example")
+
+	working, spare, err := IssueBundles(res.Journal, res.WorkingKey, res.SpareKey, "пароль")
+	if err != nil {
+		t.Fatalf("выдача ссылок: %v", err)
+	}
+	if working == spare {
+		t.Fatal("рабочая и запасная ссылки совпали")
+	}
+
+	for name, uri := range map[string]string{"рабочая": working, "запасная": spare} {
 		if _, err := bundle.Decode(uri, ""); !errors.Is(err, bundle.ErrNeedPassword) {
 			t.Fatalf("%s ссылка открылась без пароля: %v", name, err)
 		}
@@ -81,18 +135,32 @@ func TestOwnerBundlesOpenWithPassword(t *testing.T) {
 		if b.Genesis != res.Genesis {
 			t.Fatalf("%s ссылка ведёт в другую сеть", name)
 		}
-		// Узлов в ней нет и быть не может: сеть только что родилась, серверов не существует.
-		if len(b.Ingress) != 0 {
-			t.Fatalf("%s ссылка несёт узлы, которых ещё нет", name)
+		// Ради этого выдача и перенесена в конец: ключ без адреса никуда не ведёт.
+		if len(b.Ingress) != 1 || b.Ingress[0].ID != "node1" {
+			t.Fatalf("%s ссылка без узлов: %+v", name, b.Ingress)
+		}
+		if len(b.Ingress[0].Endpoints) != 2 {
+			t.Fatalf("%s ссылка потеряла адреса узла: %v", name, b.Ingress[0].Endpoints)
+		}
+		// Потолки: без них клиент поднимется на обычном Cubic, а человек будет уверен, что
+		// работает BRUTAL, который он задавал.
+		if b.Settings.BrutalUpMbps != 100 || b.Settings.BrutalDownMbps != 300 {
+			t.Fatalf("%s ссылка без потолков: %+v", name, b.Settings)
 		}
 	}
 }
 
-// Ключ клиента в ссылке владельца — это ключ из генезиса, а не посторонний.
+// Ключ в ссылке владельца — это ключ из генезиса, а не посторонний.
 func TestOwnerBundleCarriesGenesisKey(t *testing.T) {
 	res := created(t, "")
+	withNode(t, res, "node1", "one.example")
 
-	b, err := bundle.Decode(res.Working, "")
+	working, _, err := IssueBundles(res.Journal, res.WorkingKey, res.SpareKey, "")
+	if err != nil {
+		t.Fatalf("выдача ссылок: %v", err)
+	}
+
+	b, err := bundle.Decode(working, "")
 	if err != nil {
 		t.Fatalf("ссылка не открылась: %v", err)
 	}

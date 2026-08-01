@@ -39,6 +39,12 @@ const journalFile = "oplog.bin"
 // один флаг там, где речь о ключе от всей сети, не стоит.
 const ownerKeyFile = "owner.key"
 
+// spareKeyFile — запасной ключ владельца, придержанный до выдачи ссылок.
+//
+// Живёт ровно между созданием сети и включением первого узла: раньше ссылку выдавать нечем —
+// в ней не было бы ни одного адреса, — а после выдачи хранить его здесь незачем и вредно.
+const spareKeyFile = "owner-spare.key"
+
 // CreateNetwork создаёт сеть на устройстве.
 //
 // Возвращает JSON: {"genesis":…, "working":…, "spare":…}. Обе ссылки под заданным паролем;
@@ -82,17 +88,64 @@ func CreateNetwork(name, password string, brutalUp, brutalDown, brutalMesh int) 
 	if err := saveOwnerKey(dir, res.WorkingKey); err != nil {
 		return "", err
 	}
+	if err := saveSpareKey(dir, res.SpareKey); err != nil {
+		return "", err
+	}
 
 	out, err := json.Marshal(struct {
 		Genesis string `json:"genesis"`
 		Network string `json:"network"`
-		Working string `json:"working"`
-		Spare   string `json:"spare"`
 	}{
 		Genesis: res.Genesis.String(),
 		Network: name,
-		Working: res.Working,
-		Spare:   res.Spare,
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+// IssueOwnerBundles выдаёт обе ссылки владельца — после того, как первый узел в сети.
+//
+// Ссылки собираются из журнала и несут узлы, их адреса и потолки. До появления узла выдавать
+// нечего: ключ без адреса никуда не ведёт.
+//
+// Пароль тот же, что человек задал при создании сети: спрашивать его второй раз значило бы
+// завести две разные тайны там, где нужна одна.
+//
+// Долгий вызов — шифрование стоит около секунды на ссылку.
+func IssueOwnerBundles(password string) (string, error) {
+	j, dir, err := ownerJournal()
+	if err != nil {
+		return "", err
+	}
+	working, err := loadOwnerKey(dir)
+	if err != nil {
+		return "", err
+	}
+	spare, err := loadSpareKey(dir)
+	if err != nil {
+		return "", fmt.Errorf("запасной ключ потерян: %w", err)
+	}
+
+	workingURI, spareURI, err := ownerlog.IssueBundles(j, working, spare, password)
+	if err != nil {
+		return "", err
+	}
+	// Запасной ключ уходит с устройства: вся его ценность в том, что он лежит там, куда не
+	// дотянется этот телефон.
+	dropSpareKey(dir)
+
+	out, err := json.Marshal(struct {
+		Network string `json:"network"`
+		Genesis string `json:"genesis"`
+		Working string `json:"working"`
+		Spare   string `json:"spare"`
+	}{
+		Network: j.State().Network(),
+		Genesis: j.Genesis().String(),
+		Working: workingURI,
+		Spare:   spareURI,
 	})
 	if err != nil {
 		return "", err
