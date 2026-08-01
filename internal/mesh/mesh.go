@@ -64,6 +64,11 @@ type Config struct {
 	Ledger *ledger.Ledger
 	// TLS — с чем идти к соседям. Пустой означает проверку по системным корням.
 	TLS *tls.Config
+	// FallbackMeshMbps — потолок BRUTAL между узлами, пока журнала нет.
+	//
+	// Приезжает ключом развёртывания и лежит в файле настроек. Как только журнал появляется,
+	// это число забывается: там его правит владелец, и оттуда оно расходится по сети.
+	FallbackMeshMbps int
 	// Log — куда писать.
 	Log *slog.Logger
 }
@@ -91,8 +96,14 @@ type link struct {
 //
 // Берётся из журнала на каждый набор, а не запоминается при старте: администратор меняет
 // число записью, и оно должно действовать со следующей связи, без перезапуска узла.
+//
+// Пока журнала нет, берётся запасное значение из файла настроек: оно приехало ключом
+// развёртывания, и до первой сверки с соседом это всё, что узел о сети знает.
 func (m *Mesh) meshMbps() int {
-	return m.cfg.Store.State().Settings().BrutalMeshMbps
+	if fromLog := m.cfg.Store.State().Settings().BrutalMeshMbps; fromLog > 0 {
+		return fromLog
+	}
+	return m.cfg.FallbackMeshMbps
 }
 
 // New собирает mesh.

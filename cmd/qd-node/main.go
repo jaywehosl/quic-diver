@@ -141,7 +141,10 @@ func run(configPath string, showKey bool, importPath string) error {
 		Store:     st,
 		Bootstrap: cfg.Peers,
 		Ledger:    events,
-		Log:       log,
+		// Пока журнала нет, потолок между узлами берётся из файла настроек: он приехал
+		// ключом развёртывания. С приходом журнала верх берут числа из него.
+		FallbackMeshMbps: cfg.BrutalMeshMbps,
+		Log:              log,
 	})
 	if err != nil {
 		return err
@@ -175,7 +178,7 @@ func run(configPath string, showKey bool, importPath string) error {
 		OnRace:  mesh.OnRace,
 		Exits:   mesh,
 		// Узел шлёт клиенту «вниз»: столько, сколько тот в состоянии принять (решение 006).
-		SendMbps: st.State().Settings().BrutalDownMbps,
+		SendMbps: brutalDown(cfg, st),
 		Meter:    books,
 		Sessions: books,
 		Log:      log,
@@ -219,10 +222,11 @@ func run(configPath string, showKey bool, importPath string) error {
 
 	go serve(log, "quic", cfg.Listen, n.ListenAndServe)
 
-	settings := st.State().Settings()
+	// Печатаются действующие числа, а не журнальные: пока журнала нет, работают те, что
+	// приехали ключом развёртывания, и человеку важно видеть именно их.
 	log.Info("узел поднят", "id", cfg.ID, "domain", cfg.Domain,
 		"quic", cfg.Listen, "https", cfg.ListenTCP, "acme", cfg.ListenACME,
-		"brutal_вниз_мбит", settings.BrutalDownMbps, "brutal_между_узлами_мбит", settings.BrutalMeshMbps)
+		"brutal_вниз_мбит", brutalDown(cfg, st), "brutal_между_узлами_мбит", brutalMesh(cfg, st))
 
 	<-ctx.Done()
 	log.Info("остановка")

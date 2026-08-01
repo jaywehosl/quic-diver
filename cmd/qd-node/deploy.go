@@ -8,6 +8,7 @@ import (
 
 	"github.com/jaywehosl/quic-diver/internal/config"
 	"github.com/jaywehosl/quic-diver/internal/ownerlog"
+	"github.com/jaywehosl/quic-diver/internal/store"
 )
 
 // Развёртывание по ключу (решение 007 §3).
@@ -40,6 +41,10 @@ func deployNode(key, configPath string) error {
 	cfg.Domain = d.Domain
 	cfg.Genesis = d.Genesis.String()
 	cfg.Peers = d.Peers
+	// Потолки из ключа — чтобы узел работал с ними от самого старта, а не с прихода журнала.
+	// Свежий узел ждёт журнала минутами: человек в это время идёт к телефону вводить код.
+	cfg.BrutalDownMbps = d.Settings.BrutalDownMbps
+	cfg.BrutalMeshMbps = d.Settings.BrutalMeshMbps
 
 	// Каталоги: конфиг читает root, данные пишет служба.
 	if dir := filepath.Dir(configPath); dir != "" && dir != "." {
@@ -70,6 +75,27 @@ func deployNode(key, configPath string) error {
 		fmt.Println("соседей нет: журнал придёт от владельца, с его устройства")
 	}
 	return nil
+}
+
+// brutalDown выбирает потолок отправки клиентам.
+//
+// Журнал главнее файла: там числа правит владелец, и оттуда они расходятся по сети. Но пока
+// журнала нет — а свежий узел живёт так минутами, ожидая, когда человек введёт его код в
+// приложении, — берётся то, что приехало ключом развёртывания. Иначе всё это время узел работал
+// бы на обычном Cubic, хотя потолки заданы.
+func brutalDown(cfg config.Node, st *store.Store) int {
+	if fromLog := st.State().Settings().BrutalDownMbps; fromLog > 0 {
+		return fromLog
+	}
+	return cfg.BrutalDownMbps
+}
+
+// brutalMesh — то же для участка узел↔узел.
+func brutalMesh(cfg config.Node, st *store.Store) int {
+	if fromLog := st.State().Settings().BrutalMeshMbps; fromLog > 0 {
+		return fromLog
+	}
+	return cfg.BrutalMeshMbps
 }
 
 // nodeTOML собирает файл настроек.
@@ -111,6 +137,11 @@ func nodeTOML(cfg config.Node) string {
 	}
 
 	fmt.Fprintf(&b, "acme_email = %q\n", cfg.ACMEEmail)
-	fmt.Fprintf(&b, "log_level  = %q\n", cfg.LogLevel)
+	fmt.Fprintf(&b, "log_level  = %q\n\n", cfg.LogLevel)
+
+	b.WriteString("# Потолки BRUTAL до прихода журнала, Мбит/с. Ноль означает обычный Cubic.\n")
+	b.WriteString("# Как только приезжает журнал, верх берут числа из него — там их правит владелец.\n")
+	fmt.Fprintf(&b, "brutal_down_mbps = %d\n", cfg.BrutalDownMbps)
+	fmt.Fprintf(&b, "brutal_mesh_mbps = %d\n", cfg.BrutalMeshMbps)
 	return b.String()
 }
