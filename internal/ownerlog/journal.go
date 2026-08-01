@@ -29,6 +29,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jaywehosl/quic-diver/internal/oplog"
 )
@@ -47,6 +48,11 @@ var ErrNoGenesis = errors.New("ownerlog: журнала нет, сеть не с
 type Journal struct {
 	ops   []*oplog.Op
 	state *oplog.State
+	// expect — отпечаток сети, к которой мы принадлежим. Нулевой означает «любая»: так журнал
+	// создаётся, когда сеть в нём и рождается.
+	expect oplog.Fingerprint
+	// latest — время самой поздней записи. Нужно, чтобы следующая была строго позже (tick).
+	latest time.Time
 	// counters — последний счётчик каждого ключа. Нужен, чтобы подписать следующую запись:
 	// последовательность ключа не терпит пропусков.
 	counters map[oplog.KeyID]uint64
@@ -117,8 +123,30 @@ func (j *Journal) Save(path string) error {
 	return nil
 }
 
+// Expect задаёт отпечаток сети, к которой журнал принадлежит.
+//
+// Нужно ровно в одном случае — когда журнал пуст и его собираются наполнить по сети: владелец
+// вставил свою ссылку на чистом устройстве и забирает журнал у узла. Проверить подпись генезиса
+// нечем (ключи владельцев объявляет он сам), поэтому единственное, что отличает свою сеть от
+// чужой, — отпечаток из ссылки.
+//
+// Тот же довод, по которому узел не принимает чужой журнал первым заливом (решение 007 §3.3).
+func (j *Journal) Expect(fp oplog.Fingerprint) { j.expect = fp }
+
 // Append проверяет запись и добавляет её.
 func (j *Journal) Append(op *oplog.Op) (oplog.Effect, error) {
+	// Генезис — единственная запись, для которой подписи недостаточно: он сам объявляет ключи
+	// владельцев, и любой правильно собранный чужой генезис пройдёт проверку с блеском.
+	if op.Kind == oplog.KindGenesis && !j.expect.IsZero() {
+		fp, err := oplog.FingerprintOf(op)
+		if err != nil {
+			return 0, err
+		}
+		if fp != j.expect {
+			return 0, fmt.Errorf("ownerlog: журнал от другой сети: у него %s, ждали %s", fp, j.expect)
+		}
+	}
+
 	effect, err := j.state.Apply(op)
 	if err != nil {
 		return 0, err
@@ -127,7 +155,36 @@ func (j *Journal) Append(op *oplog.Op) (oplog.Effect, error) {
 	if op.Counter > j.counters[op.Key] {
 		j.counters[op.Key] = op.Counter
 	}
+	if op.Time.After(j.latest) {
+		j.latest = op.Time
+	}
 	return effect, nil
+}
+
+// tick выдаёт время следующей записи — строго позже предыдущей.
+//
+// Часы здесь не роскошь, а способ разрешать конфликты: две правки одного объекта сравниваются
+// по паре (время, ключ), и та, что раньше, проигрывает. Записи, попавшие в одну миллисекунду,
+// оказываются равными — и вторая молча отбрасывается как «не новее».
+//
+// Само по себе это редкость, но не для нас: часы Windows тикают раз в 10–15 мс, а человек
+// нажимает кнопки быстрее. Приостановить клиента и тут же вернуть — и возврат пропадает,
+// причём без единой ошибки: журнал считает, что запись законна, просто устарела.
+//
+// Поэтому время берётся не у часов напрямую, а сдвигается вперёд, если часы не успели.
+// Расхождение с настоящим временем на миллисекунды безвредно: сеть сверяет порядок записей, а
+// не показания часов.
+//
+// Округление до миллисекунды здесь обязательно, а не для красоты: запись хранит время именно в
+// миллисекундах (oplog.NewOp усекает его при подписи). Сравнивать неокруглённые часы с временем
+// уже записанной записи бессмысленно — разница в доли миллисекунды исчезнет при подписи, и обе
+// записи окажутся одновременными.
+func (j *Journal) tick() time.Time {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if !now.After(j.latest) {
+		now = j.latest.Add(time.Millisecond)
+	}
+	return now
 }
 
 // Write выгружает журнал байт в байт, в том же формате, что и store.Export.
@@ -172,6 +229,75 @@ func (j *Journal) Next(key oplog.KeyID) uint64 { return j.counters[key] + 1 }
 
 // Genesis — отпечаток сети. Нулевой означает, что сети ещё нет.
 func (j *Journal) Genesis() oplog.Fingerprint { return j.state.Genesis() }
+
+// Обмен журналами с узлом (control.Log).
+//
+// Тот же обмен, каким сверяются узлы между собой: обе стороны говорят, где находятся, и
+// досылают недостающее. Владельцу он нужен по двум поводам сразу — донести свою правку до сети
+// и забрать чужие: узлы правит не только это устройство, и запасная ссылка на другом телефоне
+// подписывает записи своим ключом.
+
+// Counters — последний счётчик каждого ключа. С этого начинается обмен.
+func (j *Journal) Counters() map[oplog.KeyID]uint64 {
+	out := make(map[oplog.KeyID]uint64, len(j.counters))
+	for id, n := range j.counters {
+		out[id] = n
+	}
+	return out
+}
+
+// Since отдаёт записи, которых у собеседника нет.
+//
+// Перебором по всему журналу, без индексов: записей десятки, и заводить ради них ту же
+// машинерию, что у узла, незачем.
+func (j *Journal) Since(have map[oplog.KeyID]uint64) ([]*oplog.Op, error) {
+	var out []*oplog.Op
+	for _, op := range j.ops {
+		if op.Counter > have[op.Key] {
+			out = append(out, op)
+		}
+	}
+	return out, nil
+}
+
+// Import вливает присланное собеседником.
+//
+// Каждая запись проходит те же проверки, что и на узле: подпись, права, место в
+// последовательности. Уже применённое пропускается молча — сосед присылает и то, что мы давно
+// знаем, и падать на этом было бы странно.
+func (j *Journal) Import(r io.Reader) (int, error) {
+	added := 0
+	lim := io.LimitReader(r, maxJournal)
+	for {
+		op, err := oplog.Decode(lim)
+		if errors.Is(err, io.EOF) {
+			return added, nil
+		}
+		if err != nil {
+			return added, fmt.Errorf("ownerlog: разбор присланной записи: %w", err)
+		}
+
+		switch _, err := j.Append(op); {
+		case err == nil:
+			added++
+		case errors.Is(err, oplog.ErrReplay), errors.Is(err, oplog.ErrDoubleGenesis):
+			// Уже применяли. Для генезиса это ещё и проверка сети: чужой отличался бы
+			// отпечатком, и запись не совпала бы с нашей.
+			if op.Kind == oplog.KindGenesis {
+				fp, ferr := oplog.FingerprintOf(op)
+				if ferr != nil {
+					return added, ferr
+				}
+				if fp != j.Genesis() {
+					return added, fmt.Errorf("ownerlog: журнал от другой сети: у них %s, у нас %s",
+						fp, j.Genesis())
+				}
+			}
+		default:
+			return added, err
+		}
+	}
+}
 
 // bytesReader — короткая запись для bytes.NewReader, чтобы не тащить импорт по всему пакету.
 func bytesReader(b []byte) io.Reader { return bytes.NewReader(b) }

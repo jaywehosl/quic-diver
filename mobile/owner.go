@@ -366,7 +366,42 @@ func AdoptOwnerBundle(uri, password string) error {
 	if !b.Owner {
 		return errors.New("это обычная ссылка клиента, а не ссылка владельца")
 	}
-	return saveOwnerKey(dir, b.ClientKey)
+	if err := saveOwnerKey(dir, b.ClientKey); err != nil {
+		return err
+	}
+
+	// Ключ есть, а журнала нет — управлять пока нечем. Забираем его у любого узла из ссылки:
+	// ровно для этого ссылка владельца и выдаётся после включения первого узла, а не до.
+	j, err := ownerlog.Open(filepath.Join(dir, journalFile))
+	if err != nil {
+		return err
+	}
+	if !j.Genesis().IsZero() {
+		// Журнал уже есть — значит это то же устройство, и ссылку вставили просто так.
+		return nil
+	}
+
+	nodes := make([]oplog.Node, 0, len(b.Ingress))
+	for _, n := range b.Ingress {
+		nodes = append(nodes, oplog.Node{
+			ID:        n.ID,
+			Domain:    n.Domain,
+			Endpoints: n.Endpoints,
+			PublicKey: n.PublicKey,
+			Roles:     []string{oplog.RoleIngress},
+		})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
+	defer cancel()
+
+	if _, err := j.Fetch(ctx, b.Genesis, nodes, b.ClientKey, slog.New(newHandler())); err != nil {
+		return fmt.Errorf("ключ принят, но журнал забрать не вышло: %w", err)
+	}
+	if err := j.Save(filepath.Join(dir, journalFile)); err != nil {
+		return err
+	}
+	return client.RememberNetwork(dir, qdcontrol.SnapshotOf(j.State()), slog.New(newHandler()))
 }
 
 // ownerJournal открывает журнал сети и проверяет, что сеть вообще есть.

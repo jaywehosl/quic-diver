@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/jaywehosl/quic-diver/internal/oplog"
-	"github.com/jaywehosl/quic-diver/internal/store"
 )
 
 // Offer — где собеседник находится: последний применённый счётчик по каждому ключу.
@@ -28,6 +27,24 @@ type SyncResult struct {
 	Received int
 }
 
+// Log — журнал, участвующий в обмене.
+//
+// Интерфейс, а не `*store.Store`, потому что сторон две и устроены они по-разному. У узла
+// журнал живёт в SQLite: он держит его годами и сверяется с десятком соседей. У владельца —
+// файлом в памяти, без базы: записей десятки, и тащить SQLite в мобильную сборку ради них
+// незачем (см. internal/ownerlog).
+//
+// Обмен от этого не меняется ни на байт: обе стороны говорят, где находятся, и досылают
+// недостающее.
+type Log interface {
+	// Counters — последний применённый счётчик по каждому ключу.
+	Counters() map[oplog.KeyID]uint64
+	// Since — записи, которых у собеседника нет.
+	Since(have map[oplog.KeyID]uint64) ([]*oplog.Op, error)
+	// Import вливает присланное, проверяя каждую запись.
+	Import(r io.Reader) (int, error)
+}
+
 // Sync обменивается журналом с собеседником.
 //
 // Обмен симметричный: обе стороны говорят, где находятся, и каждая отдаёт недостающее.
@@ -42,7 +59,7 @@ type SyncResult struct {
 // помещаться в окно — у QUIC оно конечное, у net.Pipe его нет вовсе. Симметричный протокол
 // поверх однопоточного «сначала пишу, потом читаю» — это дедлок, ждущий достаточно длинного
 // журнала.
-func Sync(rw io.ReadWriter, st *store.Store) (SyncResult, error) {
+func Sync(rw io.ReadWriter, st Log) (SyncResult, error) {
 	type half struct {
 		sent, received int
 		err            error
@@ -242,7 +259,7 @@ func writeRecords(w io.Writer, ops []*oplog.Op) error {
 	return WriteFrame(w, KindSyncDone, nil)
 }
 
-func readRecords(r io.Reader, st *store.Store) (int, error) {
+func readRecords(r io.Reader, st Log) (int, error) {
 	f, err := ReadFrame(r)
 	if err != nil {
 		return 0, err
