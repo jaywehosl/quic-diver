@@ -1,4 +1,4 @@
-# QUIC Diver
+﻿# QUIC Diver
 
 Прокси-протокол на QUIC. Узлы под Linux, клиенты под Android и Windows.
 
