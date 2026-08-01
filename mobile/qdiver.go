@@ -193,6 +193,7 @@ func FetchGeo(bundle, password string) error {
 		Bundle:         bundle,
 		BundlePassword: password,
 		GeoDir:         prefs.geoDir,
+		StateDir:       prefs.stateDir,
 		GeoMode:        "auto",
 		Log:            slog.New(newHandler()),
 	}

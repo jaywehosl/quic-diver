@@ -60,6 +60,11 @@ func resolveNetwork(o Options, log *slog.Logger) (*network, error) {
 func fromBundle(uri, password string, log *slog.Logger) (*network, error) {
 	b, err := bundle.Decode(uri, password)
 	if err != nil {
+		// Ошибки разбора ссылки человек видит на экране, и «бандл зашифрован» без подробностей
+		// не говорит ему ничего: пароль-то он ввёл. Дописываем, что именно пришло, — но саму
+		// ссылку и пароль в журнал не кладём, там ключ.
+		log.Error("ссылка не разобралась", "err", err,
+			"длина_ссылки", len(strings.TrimSpace(uri)), "пароль_задан", password != "")
 		return nil, err
 	}
 

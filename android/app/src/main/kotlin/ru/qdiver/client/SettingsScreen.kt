@@ -287,6 +287,10 @@ fun SettingsScreen(prefs: Prefs, onBack: () -> Unit, onWiped: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     prefs.wipe()
+                    // Журнал сети и ключ владельца лежат файлами, не в настройках, и prefs.wipe
+                    // до них не достаёт. Оставить их — значит получить устройство, где сети
+                    // «нет», а создать новую нельзя: она уже есть.
+                    Core.wipeOwner()
                     confirmWipe = false
                     onWiped()
                 }) { Text("Стереть") }

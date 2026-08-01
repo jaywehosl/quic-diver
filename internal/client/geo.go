@@ -105,6 +105,14 @@ func FetchGeo(ctx context.Context, o Options) (GeoStatus, error) {
 	if err != nil {
 		return GeoStatus{}, err
 	}
+	// Узлы из памяти, если они там есть. Иначе базы нельзя скачать владельцу: в его ссылке
+	// узлов нет и не будет — она выдана раньше, чем появился первый узел.
+	if saved, ok := loadRemembered(o.StateDir, net.genesis, log); ok {
+		net.targets = saved.targets()
+	}
+	if len(net.targets) == 0 {
+		return GeoStatus{}, fmt.Errorf("сеть пока не знает ни одного входного узла: %w", node.ErrNoTargets)
+	}
 
 	conn, err := link.New(link.Config{
 		Targets:   net.targets,
