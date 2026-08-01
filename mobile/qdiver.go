@@ -235,6 +235,16 @@ func RefreshNetwork(bundle, password string) (string, error) {
 	if bundle == "" {
 		return "", errors.New("не задан бандл сети")
 	}
+
+	// У владельца спрашивать сеть не у кого и незачем: он её и есть. Узлы лежат в его журнале,
+	// и это источник более свежий, чем любой снапшот, — снапшот собирается из журнала, только
+	// чужого и по дороге.
+	if status, ok, err := refreshFromOwnJournal(); ok {
+		if err != nil {
+			return "", err
+		}
+		return status, nil
+	}
 	status, err := client.RefreshNetwork(context.Background(), o)
 	if err != nil {
 		return "", err

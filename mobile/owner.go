@@ -241,6 +241,33 @@ func OwnerStatus() string {
 	return string(out)
 }
 
+// refreshFromOwnJournal обновляет сведения о сети из своего же журнала.
+//
+// Второе значение — брался ли этот путь вообще: журнала нет, значит устройство сетью не владеет
+// и обновляться ему надо обычным способом, спросив узел.
+func refreshFromOwnJournal() (string, bool, error) {
+	mu.Lock()
+	dir := prefs.stateDir
+	mu.Unlock()
+
+	if dir == "" {
+		return "", false, nil
+	}
+	j, err := ownerlog.Open(filepath.Join(dir, journalFile))
+	if err != nil || j.Genesis().IsZero() {
+		return "", false, nil
+	}
+
+	snap := qdcontrol.SnapshotOf(j.State())
+	if len(snap.Nodes) == 0 {
+		return "", true, errors.New("в сети пока нет ни одного входного узла — разверни его")
+	}
+	if err := client.RememberNetwork(dir, snap, slog.New(newHandler())); err != nil {
+		return "", true, err
+	}
+	return client.LocalNetwork(dir, slog.New(newHandler())).JSON(), true, nil
+}
+
 // WipeOwner стирает сеть с этого устройства: журнал, ключ владельца, запомненные узлы.
 //
 // Нужно затем, что создать вторую сеть поверх первой нельзя — это стёрло бы ключи от первой без

@@ -32,6 +32,9 @@ type network struct {
 	settings  oplog.Settings
 	// genesis — отпечаток сети. Им проверяется, что снапшот пришёл от своих.
 	genesis oplog.Fingerprint
+	// owner говорит, что ссылка владельческая. Такой клиент разговаривает с узлом другим
+	// языком: узел отвечает ему сверкой журналов, а не снапшотами.
+	owner bool
 	// fromBundle говорит, откуда это взялось: без бандла часть возможностей недоступна,
 	// и молчать об этом нельзя.
 	fromBundle bool
@@ -65,8 +68,20 @@ func fromBundle(uri, password string, log *slog.Logger) (*network, error) {
 		return nil, err
 	}
 
+	// Владелец представляется узлу иначе, чем клиент, и это не формальность.
+	//
+	// Узел ищет ключ по роли: у клиента — в списке клиентов, по имени; у владельца — среди
+	// админских ключей, по отпечатку самого ключа. Ключ владельца объявлен в генезисе и в
+	// списке клиентов не значится никогда, поэтому владелец, назвавшийся клиентом, получает
+	// страницу-заглушку — узел его честно не знает.
+	self := hello.Identity{Role: hello.RoleClient, ID: b.ClientID, Signer: signer}
+	if b.Owner {
+		self = hello.Identity{Role: hello.RoleAdmin, ID: signer.KeyID().String(), Signer: signer}
+	}
+
 	n := &network{
-		self:       hello.Identity{Role: hello.RoleClient, ID: b.ClientID, Signer: signer},
+		self:       self,
+		owner:      b.Owner,
 		name:       b.Network,
 		hasEgress:  b.HasEgress,
 		settings:   b.Settings,

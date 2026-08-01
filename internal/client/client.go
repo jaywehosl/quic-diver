@@ -259,7 +259,15 @@ func Run(ctx context.Context, o Options) error {
 
 	// Сеть рассказывает о себе снапшотом: узлы, параметры, расход. Клиент применяет их на лету
 	// и запоминает до следующего запуска (решение 007 §4).
-	go watchSnapshots(ctx, conn, net.genesis, o.State, memory, log)
+	//
+	// Владельцу снапшоты не приходят: узел отвечает ему сверкой журналов — тем же обменом,
+	// каким сверяются узлы между собой (решение 007 §1.1). Читать этот поток как снапшоты
+	// значило бы разбирать чужие кадры и писать в журнал строку на каждый.
+	if net.owner {
+		log.Info("работаю по ссылке владельца: узлы беру из своего журнала, снапшоты не жду")
+	} else {
+		go watchSnapshots(ctx, conn, net.genesis, o.State, memory, log)
+	}
 
 	finder := procmatch.New()
 	if _, err := finder.Lookup(netip.AddrPort{}, netip.AddrPort{}); errors.Is(err, procmatch.ErrUnsupported) {
