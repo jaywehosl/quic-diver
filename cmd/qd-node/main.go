@@ -37,11 +37,21 @@ func main() {
 	configPath := flag.String("config", "/etc/qdiver/node.toml", "путь к файлу настроек")
 	showKey := flag.Bool("show-key", false, "напечатать публичный ключ узла и выйти")
 	importPath := flag.String("import", "", "влить журнал из файла и выйти")
+	deployKey := flag.String("deploy", "", "разложить настройки по ключу развёртывания и выйти")
 	showUsage := flag.Bool("usage", false, "напечатать расход, посчитанный этим узлом, и выйти")
 	flag.Parse()
 
 	if *showUsage {
 		if err := printUsage(*configPath); err != nil {
+			fmt.Fprintln(os.Stderr, "qd-node:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// Раскладка настроек идёт до всего остального: конфига в этот момент ещё нет, и обычный
+	// путь запуска упал бы на его чтении.
+	if *deployKey != "" {
+		if err := deployNode(*deployKey, *configPath); err != nil {
 			fmt.Fprintln(os.Stderr, "qd-node:", err)
 			os.Exit(1)
 		}
