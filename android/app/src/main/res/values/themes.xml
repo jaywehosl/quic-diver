@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Тема окна нужна только до первого кадра Compose: дальше цветом заведует MaterialTheme.
+        Но эти доли секунды видны — без ночного варианта тёмная тема моргает белым.
+
+        Панели прозрачные: приложение рисует себя под ними само (enableEdgeToEdge).
+    -->
+    <style name="Theme.Qdiver" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFBFE</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

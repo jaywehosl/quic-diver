@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SYSTEM_EXEMPTED" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+        Список установленных приложений нужен ради правил по приложениям: «банк мимо туннеля»
+        нельзя предложить, не показав, какие приложения есть.
+
+        С Android 11 без этого разрешения система отдаёт только своё да несколько системных, и
+        делает это молча: getInstalledApplications возвращает короткий список, а
+        getLaunchIntentForPackage — null для чужих пакетов. Отличить «приложения нет» от «его
+        не показывают» изнутри невозможно.
+    -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <application
+        android:label="QUIC Diver"
+        android:icon="@android:drawable/ic_lock_lock"
+        android:allowBackup="false"
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <!--
+            Экран один: переходы между вводом ссылки, главным, маршрутизацией и настройками
+            живут внутри Compose. Отдельные Activity для этого не нужны — состояние у них
+            общее, а системная кнопка «назад» и так работает.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="QUIC Diver"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!--
+                Бандл — ссылка, и открываться она должна как ссылка: человек нажимает её в
+                переписке, и приложение получает сеть целиком. Набирать пятьсот символов
+                руками не должен никто.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="qdiver" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Служба VPN. Разрешение BIND_VPN_SERVICE выдаётся системе, а не нам: так устроен
+            VpnService — систему просят создать интерфейс, и она же решает, показывать ли
+            человеку запрос.
+        -->
+        <service
+            android:name=".QdVpnService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE"
+            android:foregroundServiceType="systemExempted">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>

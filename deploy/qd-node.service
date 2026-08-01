@@ -1,0 +1,46 @@
+[Unit]
+Description=QUIC Diver node
+Documentation=https://github.com/jaywehosl/quic-diver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qdiver
+Group=qdiver
+ExecStart=/usr/local/bin/qd-node -config /etc/qdiver/node.toml
+Restart=always
+RestartSec=2s
+
+# Порты 80 и 443 без root: узлу нужна ровно одна привилегия, и только она выдаётся.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+# Узел пишет только в свой каталог. Всё остальное для него доступно лишь на чтение.
+StateDirectory=qdiver
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/qdiver
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Соединения живут долго и рвать их при остановке нельзя резко: узел уходит из сети сам.
+KillSignal=SIGTERM
+TimeoutStopSec=150s
+
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target

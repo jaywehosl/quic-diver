@@ -1,0 +1,64 @@
+# Распакованные исходники зависимостей — только для чтения/сверки, не часть проекта
+/.refsrc/
+
+# Архивы, из которых распакован .refsrc
+/*.zip
+
+# Сборки
+/bin/
+/dist/
+*.exe
+*.dll.tmp
+*.so
+*.a
+*.test
+
+# Локальные конфиги и данные узла/клиента
+*.local.yaml
+*.local.toml
+*.local.env
+/.env
+/run/
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Ключи и сертификаты — никогда в репозиторий
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Исключение: тестовые сертификаты внутри форка quic-go. Не секреты, лежат в апстриме,
+# без них не идут его тесты — а тесты нам нужны, чтобы проверять свой патч.
+!/third_party/quic-go/**/testdata/**
+
+# Мусор инструментов
+/coverage.out
+/profile.out
+*.pprof
+.DS_Store
+Thumbs.db
+
+# Сборка приложения и ключ для отладочной подписи
+/build/
+/android/debug.keystore
+
+# Android: ���������� �� ����������, � git �� ��������
+android/app/build/
+android/build/
+android/.gradle/
+android/app/libs/*.aar
+android/local.properties
+
+
+# Внутренние документы и рабочие правила: ведутся локально, в публичную ветку не едут
+/docs/
+/CLAUDE.md
+
+# Генерируется gomobile вместе с .aar
+android/app/libs/*.jar
