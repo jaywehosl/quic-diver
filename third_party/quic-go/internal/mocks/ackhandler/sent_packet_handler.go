@@ -565,6 +565,42 @@ func (c *MockSentPacketHandlerSentPacketCall) DoAndReturn(f func(monotime.Time, 
 	return c
 }
 
+// SetBrutalSendMbps mocks base method.
+func (m *MockSentPacketHandler) SetBrutalSendMbps(mbps int) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetBrutalSendMbps", mbps)
+}
+
+// SetBrutalSendMbps indicates an expected call of SetBrutalSendMbps.
+func (mr *MockSentPacketHandlerMockRecorder) SetBrutalSendMbps(mbps any) *MockSentPacketHandlerSetBrutalSendMbpsCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetBrutalSendMbps", reflect.TypeOf((*MockSentPacketHandler)(nil).SetBrutalSendMbps), mbps)
+	return &MockSentPacketHandlerSetBrutalSendMbpsCall{Call: call}
+}
+
+// MockSentPacketHandlerSetBrutalSendMbpsCall wrap *gomock.Call
+type MockSentPacketHandlerSetBrutalSendMbpsCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockSentPacketHandlerSetBrutalSendMbpsCall) Return() *MockSentPacketHandlerSetBrutalSendMbpsCall {
+	c.Call = c.Call.Return()
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockSentPacketHandlerSetBrutalSendMbpsCall) Do(f func(int)) *MockSentPacketHandlerSetBrutalSendMbpsCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockSentPacketHandlerSetBrutalSendMbpsCall) DoAndReturn(f func(int)) *MockSentPacketHandlerSetBrutalSendMbpsCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // SetMaxDatagramSize mocks base method.
 func (m *MockSentPacketHandler) SetMaxDatagramSize(count protocol.ByteCount) {
 	m.ctrl.T.Helper()

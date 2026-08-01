@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/jaywehosl/quic-diver/internal/decoy"
@@ -110,6 +111,10 @@ type Node struct {
 	log      *slog.Logger
 	now      func() time.Time
 	sessions *sessions
+	// conns и sendMbps — живые соединения и действующий потолок отправки. Нужны, чтобы
+	// поменять скорость, не разрывая связь (см. rate.go).
+	conns    *conns
+	sendMbps atomic.Int64
 }
 
 // New собирает узел.
@@ -144,13 +149,17 @@ func New(cfg Config) (*Node, error) {
 	// ALPN только h3: свой отличал бы наши узлы от любого другого сайта на HTTP/3.
 	tlsConf.NextProtos = []string{quicx.ALPN}
 
-	n := &Node{cfg: cfg, log: cfg.Log, now: cfg.Now, sessions: newSessions()}
+	n := &Node{cfg: cfg, log: cfg.Log, now: cfg.Now, sessions: newSessions(), conns: newConns()}
+	n.sendMbps.Store(int64(cfg.SendMbps))
 	n.srv = &http3.Server{
 		Addr:            cfg.Addr,
 		TLSConfig:       tlsConf,
 		QUICConfig:      quicx.ClientConfig(cfg.SendMbps),
 		Handler:         n,
 		EnableDatagrams: true,
+		// Каждое соединение берётся на учёт: потолок скорости меняют на работающей сети, и
+		// список живых соединений — единственный способ донести до них новое число.
+		ConnContext: n.connContext,
 	}
 	return n, nil
 }

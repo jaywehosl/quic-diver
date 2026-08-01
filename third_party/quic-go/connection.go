@@ -3060,6 +3060,25 @@ func (c *Conn) LocalAddr() net.Addr { return c.conn.LocalAddr() }
 // RemoteAddr returns the remote address of the QUIC connection.
 func (c *Conn) RemoteAddr() net.Addr { return c.conn.RemoteAddr() }
 
+// SetBrutalSendMbps меняет заданную скорость BRUTAL на живом соединении (QUIC Diver).
+//
+// Отклонение от upstream, как и сам Config.BrutalSendMbps. Нужно затем, что потолок задаёт
+// человек и меняет его на работающей сети: перезапуск ради этого разорвал бы все соединения
+// разом — трафик всех клиентов ради числа в пару байт.
+//
+// Действует не мгновенно физически: пейсер подхватит новое значение с ближайшего такта, окно
+// перестроится в пределах одного RTT. Для смены потолка этого достаточно.
+//
+// Ничего не делает, если соединение установлено на обычном алгоритме: там скорость не задают,
+// её измеряют, и включить BRUTAL на ходу нельзя — контроллер выбирается при рукопожатии.
+// Зовётся из чужой горутины, поэтому и число в контроллере, и запомненный выбор скорости
+// атомарны: отправляющая горутина читает их постоянно и останавливаться ради этого не должна.
+func (c *Conn) SetBrutalSendMbps(mbps int) {
+	if h := c.sentPacketHandler; h != nil {
+		h.SetBrutalSendMbps(mbps)
+	}
+}
+
 // getPathManager lazily initializes the Conn's pathManagerOutgoing.
 // May create multiple pathManagerOutgoing objects if called concurrently.
 func (c *Conn) getPathManager() *pathManagerOutgoing {

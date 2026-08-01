@@ -24,6 +24,11 @@ type SentPacketHandler interface {
 	// It is used for pacing packets.
 	TimeUntilSend() monotime.Time
 	SetMaxDatagramSize(count protocol.ByteCount)
+	// SetBrutalSendMbps меняет заданную скорость BRUTAL на живом соединении (QUIC Diver).
+	//
+	// Ничего не делает, если соединение идёт на обычном алгоритме: там скорость не задают, её
+	// измеряют.
+	SetBrutalSendMbps(mbps int)
 
 	// only to be called once the handshake is complete
 	QueueProbePacket(protocol.EncryptionLevel) bool /* was a packet queued */

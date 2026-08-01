@@ -3,6 +3,7 @@ package ackhandler
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go/internal/congestion"
@@ -114,7 +115,10 @@ type sentPacketHandler struct {
 
 	// brutalSendMbps помнит выбор алгоритма: при переезде на другой путь отправитель
 	// создаётся заново, и он обязан остаться тем же.
-	brutalSendMbps int
+	//
+	// Атомарный, потому что потолок меняют снаружи, из чужой горутины: владелец сети правит
+	// число, и оно доходит до живых соединений, не разрывая их (см. SetBrutalSendMbps).
+	brutalSendMbps atomic.Int64
 }
 
 var _ SentPacketHandler = &sentPacketHandler{}
@@ -148,12 +152,12 @@ func NewSentPacketHandler(
 		rttStats:                       rttStats,
 		connStats:                      connStats,
 		congestion:                     cc,
-		brutalSendMbps:                 brutalSendMbps,
 		ignorePacketsBelow:             ignorePacketsBelow,
 		perspective:                    pers,
 		qlogger:                        qlogger,
 		logger:                         logger,
 	}
+	h.brutalSendMbps.Store(int64(brutalSendMbps))
 	if enableECN {
 		h.enableECN = true
 		h.ecnTracker = newECNTracker(logger, qlogger)
@@ -1063,6 +1067,26 @@ func (h *sentPacketHandler) SetMaxDatagramSize(s protocol.ByteCount) {
 	h.congestion.SetMaxDatagramSize(s)
 }
 
+// SetBrutalSendMbps меняет скорость BRUTAL на живом соединении (QUIC Diver, решение 006).
+//
+// Перезапуск узла ради смены потолка рвёт все соединения разом — то есть роняет трафик всех
+// клиентов ради числа, которое меняется парой байт. Здесь же меняется одно поле в контроллере:
+// пейсер подхватит его с ближайшего такта, окно перестроится в пределах RTT.
+//
+// brutalSendMbps обновляется тоже: при переезде на другой путь отправитель создаётся заново, и
+// он обязан подняться уже с новой скоростью, а не с той, что была при установлении соединения.
+func (h *sentPacketHandler) SetBrutalSendMbps(mbps int) {
+	if mbps <= 0 || h.brutalSendMbps.Load() <= 0 {
+		// На обычном алгоритме менять нечего: там скорость не задают, её измеряют. Включить
+		// BRUTAL на ходу тоже нельзя — контроллер выбирается при установлении соединения.
+		return
+	}
+	h.brutalSendMbps.Store(int64(mbps))
+	if setter, ok := h.congestion.(congestion.RateSetter); ok {
+		setter.SetRate(congestion.Bandwidth(mbps) * 1e6 * congestion.BitsPerSecond)
+	}
+}
+
 func (h *sentPacketHandler) isAmplificationLimited() bool {
 	if h.peerAddressValidated {
 		return false
@@ -1164,7 +1188,7 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 		h.appDataPackets.history.RemovePathProbe(pn)
 	}
 	h.congestion = newCongestionController(
-		h.rttStats, h.connStats, initialMaxDatagramSize, h.brutalSendMbps, h.qlogger,
+		h.rttStats, h.connStats, initialMaxDatagramSize, int(h.brutalSendMbps.Load()), h.qlogger,
 	)
 	h.setLossDetectionTimer(now)
 }

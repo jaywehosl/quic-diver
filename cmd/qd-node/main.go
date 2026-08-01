@@ -192,6 +192,7 @@ func run(configPath string, showKey bool, importPath string) error {
 
 	go mesh.Run(ctx)
 	go watchDNS(ctx, st, resolver, log)
+	go watchRate(ctx, st, n, cfg, log)
 	go books.sweep(ctx)
 
 	// :80 — проверка владения доменом и перенаправление, как у любого сайта.
