@@ -158,6 +158,32 @@ func saveRemembered(dir string, r remembered) error {
 	return nil
 }
 
+// RememberNetwork записывает сведения о сети, полученные не от узла.
+//
+// Нужно владельцу и только ему. Обычный клиент узнаёт узлы двумя путями — из ссылки и снапшотом
+// по живой связи, — и оба ему доступны. У владельца в момент создания сети нет ни того, ни
+// другого: ссылку он выдал себе сам, когда узлов ещё не существовало, а связаться не с кем
+// ровно потому, что узлов в ссылке нет.
+//
+// Круг разрывается здесь: узел, который владелец только что включил в сеть, лежит в его
+// собственном журнале — оттуда сведения и берутся, без всякой сети.
+func RememberNetwork(dir string, snap control.Snapshot, log *slog.Logger) error {
+	if dir == "" {
+		return fmt.Errorf("client: не задан каталог состояния")
+	}
+	if len(snap.Nodes) == 0 {
+		return fmt.Errorf("client: в снимке нет ни одного входного узла")
+	}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+
+	before, _ := loadRemembered(dir, snap.Genesis, log)
+	memory := &networkMemory{dir: dir, genesis: snap.Genesis, known: before}
+	memory.apply(snap, log)
+	return nil
+}
+
 // networkMemory применяет присланное сетью и хранит его до следующего запуска.
 //
 // Живёт рядом со связью, а не внутри неё: связь про журнал сети не знает ничего, а память —

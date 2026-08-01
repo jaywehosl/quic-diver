@@ -6,9 +6,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,6 +39,8 @@ fun SetupScreen(prefs: Prefs, onDone: () -> Unit, onCreate: () -> Unit) {
     var bundle by remember { mutableStateOf(prefs.bundle) }
     var password by remember { mutableStateOf(prefs.password) }
     var problem by remember { mutableStateOf("") }
+    var owner by remember { mutableStateOf(Core.owner()) }
+    var confirmWipe by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize().padding(24.dp),
@@ -106,6 +111,56 @@ fun SetupScreen(prefs: Prefs, onDone: () -> Unit, onCreate: () -> Unit) {
             fontSize = 11.sp,
             color = Grey,
             textAlign = TextAlign.Center,
+        )
+
+        // Сеть на устройстве уже есть, а человек снова на первом экране — значит прошлая
+        // попытка оборвалась на середине. Создать вторую поверх первой нельзя: это стёрло бы
+        // ключи от первой без всякой возможности их вернуть. Сброс — единственный выход, и
+        // искать его в системных настройках приложения человек не должен.
+        if (owner.owner) {
+            Text(
+                "На устройстве уже есть сеть ${owner.network}: узлов ${owner.nodes}," +
+                    " записей ${owner.records}",
+                fontSize = 12.sp,
+                color = Amber,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 24.dp),
+            )
+            OutlinedButton(
+                onClick = { confirmWipe = true },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            ) { Text("Стереть её и начать заново") }
+            Text(
+                "Ключи, журнал и все настройки будут удалены. Если ссылки владельца не" +
+                    " сохранены — управление той сетью не вернуть никак.",
+                fontSize = 11.sp,
+                color = Grey,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
+
+    if (confirmWipe) {
+        AlertDialog(
+            onDismissRequest = { confirmWipe = false },
+            title = { Text("Стереть сеть ${owner.network}?") },
+            text = {
+                Text("Ключи владельца, журнал и настройки будут удалены с этого устройства." +
+                    " Вернуть управление можно будет только запасной ссылкой, если она" +
+                    " сохранена. Узлы, уже стоящие на серверах, останутся без владельца.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    prefs.wipe()
+                    Core.wipeOwner()
+                    confirmWipe = false
+                    bundle = ""
+                    password = ""
+                    owner = Owner()
+                }) { Text("Стереть") }
+            },
+            dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Отмена") } },
         )
     }
 }

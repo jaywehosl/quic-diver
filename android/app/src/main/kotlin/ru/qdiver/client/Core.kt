@@ -121,6 +121,9 @@ object Core {
     /** Принимает ссылку владельца на этом устройстве. */
     fun adoptOwnerBundle(uri: String, password: String) = Mobile.adoptOwnerBundle(uri, password)
 
+    /** Стирает сеть с устройства: журнал, ключ владельца, запомненные узлы. */
+    fun wipeOwner() = runCatching { Mobile.wipeOwner() }.getOrNull()
+
     /** Применяет правила к работающему клиенту. Возвращает причину отказа либо null. */
     fun applyRules(json: String): String? = runCatching {
         Mobile.setRules(json)

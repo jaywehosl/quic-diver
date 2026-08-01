@@ -31,6 +31,7 @@ KEY=""
 BINARY=""
 EMAIL=""
 SKIP_CHECKS=0
+FORCE=0
 
 usage() {
 	cat >&2 <<'EOF'
@@ -39,7 +40,9 @@ setup-node.sh --key qdnode:…
   --key <ключ>       ключ развёртывания из приложения (обязателен)
   --binary <путь>    взять готовый двоичный файл вместо загрузки из релизов
   --email <почта>    почта для Let's Encrypt, необязательно
-  --skip-checks      не проверять домен и порты (только если знаешь, зачем)
+  --force            развернуть поверх уже настроенного узла: служба останавливается,
+                     прежние настройки и журнал убираются в резервную копию
+  --skip-checks      не проверять домен и порты — узел за NAT либо порты заняты намеренно
 EOF
 	exit 2
 }
@@ -49,6 +52,7 @@ while [ $# -gt 0 ]; do
 	--key) KEY="${2:-}"; shift 2 ;;
 	--binary) BINARY="${2:-}"; shift 2 ;;
 	--email) EMAIL="${2:-}"; shift 2 ;;
+	--force) FORCE=1; shift ;;
 	--skip-checks) SKIP_CHECKS=1; shift ;;
 	-h|--help) usage ;;
 	*) echo "неизвестный аргумент: $1" >&2; usage ;;
@@ -59,7 +63,29 @@ done
 [ "$(id -u)" = "0" ] || { echo "нужен root" >&2; exit 1; }
 
 say() { printf '\n== %s\n' "$1"; }
-die() { printf '\nошибка: %s\n' "$1" >&2; exit 1; }
+
+# Что откатить, если дальше не пойдёт. Заполняется по ходу: скрипт может упасть на середине,
+# и оставлять после себя полунастроенный узел нельзя — при следующем запуске он выглядел бы
+# настроенным и мешал бы сам себе.
+ROLLBACK=""
+rollback_add() { ROLLBACK="$1 $ROLLBACK"; }
+
+die() {
+	printf '\nошибка: %s\n' "$1" >&2
+	if [ -n "$ROLLBACK" ]; then
+		printf 'откатываю изменения\n' >&2
+		for step in $ROLLBACK; do
+			case "$step" in
+			service) systemctl stop qd-node 2>/dev/null || true
+			         systemctl disable qd-node 2>/dev/null || true
+			         rm -f "$UNIT"; systemctl daemon-reload 2>/dev/null || true ;;
+			config)  rm -f "$CONFIG" ;;
+			binary)  rm -f "$BIN" ;;
+			esac
+		done
+	fi
+	exit 1
+}
 
 # ─── пакеты ──────────────────────────────────────────────────────────────────────────────────
 # Узлу самому не нужно ничего: он статический. Всё нижеперечисленное нужно этому скрипту —
@@ -77,10 +103,50 @@ else
 	echo "менеджер пакетов не опознан — считаю, что curl и dig уже есть"
 fi
 
+# ─── что уже стоит ───────────────────────────────────────────────────────────────────────────
+# Разбираемся с прежней установкой до того, как что-то трогать. Иначе выходит так: скрипт
+# поставил бинарь, переписал часть файлов и упёрся в чужой конфиг — а машина осталась в
+# состоянии, которое ни туда, ни сюда.
+if [ -f "$CONFIG" ] || systemctl list-unit-files qd-node.service >/dev/null 2>&1; then
+	if [ "$FORCE" = "0" ]; then
+		cat >&2 <<EOF
+
+ошибка: на этой машине уже есть узел
+
+  настройки: $CONFIG
+  служба:    $(systemctl is-active qd-node 2>/dev/null || echo 'нет')
+
+Развернуть поверх — ключом --force: служба остановится, прежние настройки и журнал уйдут в
+резервную копию рядом с ними. Ключевая пара узла при этом сохраняется, а значит сохраняется и
+его код: пара принадлежит машине, а не сети.
+EOF
+		exit 1
+	fi
+
+	say "прежняя установка"
+	systemctl stop qd-node 2>/dev/null || true
+	systemctl disable qd-node 2>/dev/null || true
+
+	stamp="$(date +%Y%m%d-%H%M%S)"
+	if [ -f "$CONFIG" ]; then
+		mv "$CONFIG" "$CONFIG.$stamp.bak"
+		echo "прежние настройки: $CONFIG.$stamp.bak"
+	fi
+	# Журнал прежней сети убирается: узел с чужим журналом не примет наш — отпечаток не сойдётся,
+	# и сообщение об этом человек увидит уже потом, в логе службы, где его никто не ищет.
+	if [ -f /var/lib/qdiver/oplog.db ]; then
+		mkdir -p "/var/lib/qdiver/old-$stamp"
+		mv /var/lib/qdiver/oplog.db* "/var/lib/qdiver/old-$stamp/" 2>/dev/null || true
+		chown -R qdiver:qdiver "/var/lib/qdiver/old-$stamp"
+		echo "прежний журнал: /var/lib/qdiver/old-$stamp/"
+	fi
+fi
+
 # ─── двоичный файл ───────────────────────────────────────────────────────────────────────────
 say "двоичный файл"
 if [ -n "$BINARY" ]; then
 	[ -f "$BINARY" ] || die "нет файла $BINARY"
+	[ -f "$BIN" ] || rollback_add binary
 	install -m 0755 "$BINARY" "$BIN"
 	echo "поставлен из $BINARY"
 else
@@ -122,46 +188,70 @@ install -d -m 0755 /etc/qdiver
 # ─── настройки ───────────────────────────────────────────────────────────────────────────────
 # Ключ разбирает сам узел: внутри gzip под base64 с контрольной суммой, и писать этот разбор
 # на shell значило бы завести зависимость от jq и чинить её при каждой правке формата.
+#
+# Сначала во временный файл: домен нужен проверкам, а проверки идут до того, как что-то станет
+# настоящим. Иначе выходит то, что и вышло при первой обкатке — узел разворачивается на домен,
+# который на него не указывает, скрипт про это говорит и как ни в чём не бывало доходит до
+# конца, выдавая код от узла, к которому не подключиться.
 say "настройки"
-"$BIN" -deploy "$KEY" -config "$CONFIG" || die "ключ развёртывания не принят"
+TMP_CONFIG="$(mktemp)"
+"$BIN" -deploy "$KEY" -config "$TMP_CONFIG" || { rm -f "$TMP_CONFIG"; die "ключ развёртывания не принят"; }
 
-if [ -n "$EMAIL" ]; then
-	sed -i "s|^acme_email = .*|acme_email = \"$EMAIL\"|" "$CONFIG"
-fi
-chown root:qdiver "$CONFIG"
-chmod 0640 "$CONFIG"
-
-DOMAIN="$(sed -n 's/^domain *= *"\(.*\)"/\1/p' "$CONFIG")"
-[ -n "$DOMAIN" ] || die "в настройках нет домена"
+DOMAIN="$(sed -n 's/^domain *= *"\(.*\)"/\1/p' "$TMP_CONFIG")"
+[ -n "$DOMAIN" ] || { rm -f "$TMP_CONFIG"; die "в настройках нет домена"; }
 
 # ─── проверки до старта ──────────────────────────────────────────────────────────────────────
 # Обе беды ниже выглядят одинаково — «узел не работает», — а причины разные и лечатся в разных
-# местах. Сказать о них до старта дешевле, чем разбирать потом по журналам.
+# местах. И обе означают, что дальше идти незачем: домен не указывает сюда — сертификат не
+# выпустится; порт занят — узел не поднимется.
+#
+# Раньше здесь было предупреждение. Предупреждение в скрипте, который после него доходит до
+# конца и печатает код, — это не предупреждение, а строка, которую пролистывают.
 if [ "$SKIP_CHECKS" = "0" ]; then
 	say "проверки"
 
 	mine="$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null || echo '')"
 	resolved="$(dig +short A "$DOMAIN" 2>/dev/null | tail -n1 || echo '')"
-	if [ -n "$mine" ] && [ -n "$resolved" ]; then
-		if [ "$mine" = "$resolved" ]; then
-			echo "домен $DOMAIN указывает сюда ($mine)"
-		else
-			echo "предупреждение: $DOMAIN указывает на $resolved, а этот сервер $mine"
-			echo "  сертификат не выпустится, пока запись не поправлена (за NAT это нормально)"
-		fi
-	else
-		echo "предупреждение: не вышло сверить домен с адресом сервера"
+	if [ -z "$mine" ] || [ -z "$resolved" ]; then
+		rm -f "$TMP_CONFIG"
+		die "не вышло сверить $DOMAIN с адресом сервера — проверь сеть либо запусти с --skip-checks"
 	fi
+	if [ "$mine" != "$resolved" ]; then
+		rm -f "$TMP_CONFIG"
+		cat >&2 <<EOF
+
+ошибка: $DOMAIN указывает на $resolved, а этот сервер — $mine
+
+Сертификат на такой домен не выпустится: проверка Let's Encrypt придёт не сюда. Поправь запись
+A и запусти скрипт заново.
+
+Узел за NAT — единственный случай, когда это нормально: снаружи он виден по одному адресу, а
+сам себя знает по другому. Тогда --skip-checks.
+EOF
+		exit 1
+	fi
+	echo "домен $DOMAIN указывает сюда ($mine)"
 
 	for port in 80 443; do
 		if ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$port\$"; then
 			holder="$(ss -lntp 2>/dev/null | grep -E "[:.]$port\b" | head -n1 || true)"
-			echo "предупреждение: порт $port уже занят — узел не поднимется"
-			[ -n "$holder" ] && echo "  $holder"
-		else
-			echo "порт $port свободен"
+			rm -f "$TMP_CONFIG"
+			printf '\nошибка: порт %s занят — узел не поднимется\n' "$port" >&2
+			[ -n "$holder" ] && printf '  %s\n' "$holder" >&2
+			printf '\nОсвободи порт либо запусти с --skip-checks, если знаешь, что делаешь.\n' >&2
+			exit 1
 		fi
+		echo "порт $port свободен"
 	done
+fi
+
+# Проверки прошли — настройки становятся настоящими.
+install -m 0640 -o root -g qdiver "$TMP_CONFIG" "$CONFIG"
+rm -f "$TMP_CONFIG"
+rollback_add config
+
+if [ -n "$EMAIL" ]; then
+	sed -i "s|^acme_email = .*|acme_email = \"$EMAIL\"|" "$CONFIG"
 fi
 
 # ─── служба ──────────────────────────────────────────────────────────────────────────────────
@@ -182,6 +272,7 @@ net.core.wmem_max = 7500000
 EOF
 sysctl -q -p /etc/sysctl.d/99-qdiver.conf || true
 
+rollback_add service
 systemctl daemon-reload
 systemctl enable --now qd-node >/dev/null
 
@@ -189,7 +280,7 @@ sleep 2
 systemctl is-active --quiet qd-node || {
 	echo "служба не поднялась:" >&2
 	journalctl -u qd-node -n 20 --no-pager >&2 || true
-	exit 1
+	die "узел не запустился"
 }
 
 # ─── итог ────────────────────────────────────────────────────────────────────────────────────

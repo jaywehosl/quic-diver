@@ -5,11 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/jaywehosl/quic-diver/internal/bundle"
+	"github.com/jaywehosl/quic-diver/internal/client"
+	// Алиас: в этом же пакете есть переменная control — живой рычаг работающего клиента.
+	// Имена столкнулись бы, и понятнее переименовать пакет, чем переменную, которую зовут из
+	// десятка мест.
+	qdcontrol "github.com/jaywehosl/quic-diver/internal/control"
 	"github.com/jaywehosl/quic-diver/internal/oplog"
 	"github.com/jaywehosl/quic-diver/internal/ownerlog"
 )
@@ -165,6 +172,16 @@ func AdoptNode(addr, role, code string, insecure bool) (string, error) {
 		return "", err
 	}
 
+	// Узел записан в журнал — теперь о нём должна узнать клиентская половина приложения.
+	//
+	// Сама она не узнает никак: ссылку владелец выдал себе, когда узлов не существовало, и
+	// Ingress в ней пуст навсегда. Снапшот тоже не поможет — чтобы его получить, надо к
+	// кому-то подключиться, а подключаться не к кому ровно потому, что узлов нет. Круг
+	// разрывается здесь: узлы лежат в журнале владельца, оттуда их и берём.
+	if err := client.RememberNetwork(dir, qdcontrol.SnapshotOf(j.State()), slog.New(newHandler())); err != nil {
+		return "", fmt.Errorf("узел в сети, но клиент о нём не узнал: %w", err)
+	}
+
 	out, err := json.Marshal(struct {
 		Adopted   bool     `json:"adopted"`
 		ID        string   `json:"id"`
@@ -222,6 +239,32 @@ func OwnerStatus() string {
 		return empty
 	}
 	return string(out)
+}
+
+// WipeOwner стирает сеть с этого устройства: журнал, ключ владельца, запомненные узлы.
+//
+// Нужно затем, что создать вторую сеть поверх первой нельзя — это стёрло бы ключи от первой без
+// всякой возможности их вернуть, — а прерванная на середине попытка оставляет ровно такое
+// состояние: сеть создана, узлов нет, идти некуда. Без явного сброса человеку оставалось бы
+// чистить данные приложения через системные настройки.
+//
+// Узлы, уже стоящие на серверах, при этом остаются без владельца: их журнал никуда не девается,
+// а вот подписывать новые записи для них станет некому.
+func WipeOwner() error {
+	mu.Lock()
+	dir := prefs.stateDir
+	mu.Unlock()
+
+	if dir == "" {
+		return errors.New("не задан каталог состояния")
+	}
+	var failed error
+	for _, name := range []string{journalFile, ownerKeyFile, "network.json"} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			failed = err
+		}
+	}
+	return failed
 }
 
 // AdoptOwnerBundle принимает ссылку владельца на другом устройстве.

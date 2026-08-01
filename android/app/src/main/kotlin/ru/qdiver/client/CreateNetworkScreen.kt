@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
@@ -71,10 +72,14 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
     var spare by remember { mutableStateOf("") }
     var genesis by remember { mutableStateOf("") }
 
-    var nodeId by remember { mutableStateOf("qdiver1") }
+    var nodeId by remember { mutableStateOf("") }
     var domain by remember { mutableStateOf("") }
     var deployKey by remember { mutableStateOf("") }
     var code by remember { mutableStateOf("") }
+    // Из чего собран показанный ключ. Поля правятся и после сборки, а ключ сам собой не
+    // меняется — и человек уносит на сервер строку, не отвечающую тому, что видит на экране.
+    var keyFrom by remember { mutableStateOf("") }
+    var showPass by remember { mutableStateOf(false) }
 
     var busy by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf("") }
@@ -123,12 +128,13 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
             }
 
             Step.PASSWORD -> {
+                val hide = if (showPass) VisualTransformation.None else PasswordVisualTransformation()
                 OutlinedTextField(
                     value = pass1,
                     onValueChange = { pass1 = it; problem = "" },
                     label = { Text("пароль") },
                     singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = hide,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -136,9 +142,18 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                     onValueChange = { pass2 = it; problem = "" },
                     label = { Text("ещё раз") },
                     singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = hide,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
+                // Пароль вводится дважды и вслепую — сверить его глазами иначе нельзя, а
+                // ошибиться в нём означает потерять доступ к обеим ссылкам сразу.
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = showPass, onCheckedChange = { showPass = it })
+                    Text("показать пароль", Modifier.padding(start = 8.dp), fontSize = 14.sp)
+                }
                 Hint("Пароль шифрует обе ссылки. Он защищает их при передаче: перехваченная" +
                     " ссылка без пароля бесполезна. В самой сети пароль не участвует — узлы" +
                     " проверяют подпись и про него не знают ничего.")
@@ -219,6 +234,11 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
             Step.CONFIRM -> ConfirmStep(onConfirmed = { step = Step.DEPLOY })
 
             Step.DEPLOY -> {
+                // Ключ собран из этих двух полей. Правка любого из них его обесценивает: строка
+                // на экране осталась бы прежней, а человек унёс бы её на сервер и развернул узел
+                // не с тем именем и не на том домене — ровно так и вышло при первой обкатке.
+                val stale = deployKey.isNotEmpty() && keyFrom != "${nodeId.trim()}|${domain.trim()}"
+
                 OutlinedTextField(
                     value = nodeId,
                     onValueChange = { nodeId = it; problem = "" },
@@ -230,7 +250,6 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                     value = domain,
                     onValueChange = { domain = it; problem = "" },
                     label = { Text("домен узла") },
-                    placeholder = { Text("qdiver1.example.ru") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 )
@@ -238,19 +257,35 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                     " сертификат при первом запуске. Роль первого узла не спрашивается — он" +
                     " входной.")
 
-                if (deployKey.isEmpty()) {
+                if (deployKey.isEmpty() || stale) {
+                    if (stale) {
+                        Text(
+                            "Поля изменились — прежний ключ больше не годится. Собери заново.",
+                            fontSize = 12.sp,
+                            color = Amber,
+                            modifier = Modifier.padding(top = 12.dp),
+                        )
+                    }
                     Button(
                         onClick = {
-                            if (domain.isBlank()) {
-                                problem = "введи домен"
-                            } else {
-                                runCatching { Core.deployKey(nodeId.trim(), domain.trim(), "ingress") }
-                                    .onSuccess { deployKey = it }
-                                    .onFailure { problem = it.message ?: "ключ не собрался" }
+                            when {
+                                nodeId.isBlank() -> problem = "введи имя узла"
+                                domain.isBlank() -> problem = "введи домен"
+                                else -> runCatching {
+                                    Core.deployKey(nodeId.trim(), domain.trim(), "ingress")
+                                }.onSuccess {
+                                    deployKey = it
+                                    keyFrom = "${nodeId.trim()}|${domain.trim()}"
+                                    code = ""
+                                }.onFailure { problem = it.message ?: "ключ не собрался" }
                             }
                         },
                         modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-                    ) { Text("Собрать ключ развёртывания") }
+                    ) { Text(if (stale) "Собрать заново" else "Собрать ключ развёртывания") }
+                    OutlinedButton(
+                        onClick = { step = Step.LINKS },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    ) { Text("Назад к ссылкам") }
                 } else {
                     LinkBlock(
                         title = "Ключ развёртывания",
@@ -286,6 +321,10 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                         },
                         modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
                     ) { Text("Узел поднят — включить в сеть") }
+                    OutlinedButton(
+                        onClick = { deployKey = ""; code = ""; problem = "" },
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    ) { Text("Изменить имя или домен") }
                 }
             }
 
