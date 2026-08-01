@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -90,11 +91,11 @@ func (j *Journal) Adopt(ctx context.Context, p AdoptParams) (oplog.Node, error) 
 	if addr == "" {
 		return oplog.Node{}, errors.New("ownerlog: не задан адрес узла")
 	}
-	host := addr
-	if h, _, err := net.SplitHostPort(addr); err == nil {
-		host = h
+	host, port := addr, "443"
+	if h, p, err := net.SplitHostPort(addr); err == nil {
+		host, port = h, p
 	} else {
-		addr = net.JoinHostPort(addr, "443")
+		addr = net.JoinHostPort(addr, port)
 	}
 
 	tlsConf := &tls.Config{ServerName: host, InsecureSkipVerify: p.Insecure}
@@ -115,7 +116,10 @@ func (j *Journal) Adopt(ctx context.Context, p AdoptParams) (oplog.Node, error) 
 
 	endpoints := p.Endpoints
 	if len(endpoints) == 0 {
-		endpoints = []string{addr}
+		endpoints, err = resolveEndpoints(ctx, host, port)
+		if err != nil {
+			return oplog.Node{}, err
+		}
 	}
 
 	record := oplog.Node{
@@ -155,6 +159,34 @@ func (j *Journal) Adopt(ctx context.Context, p AdoptParams) (oplog.Node, error) 
 		return oplog.Node{}, err
 	}
 	return record, nil
+}
+
+// resolveEndpoints превращает имя узла в адреса-литералы.
+//
+// Литералы, а не имя, потому что этот список едет клиенту, а клиент поднимает по нему исключения
+// маршрутизации — до включения туннеля. Внутри туннеля разрешать имя узла уже нечем: служба имён
+// работает через сам туннель, и первый же запрос ушёл бы в него, то есть в никуда.
+//
+// Берутся все адреса сразу, и v4, и v6: у узла бывает и то и другое, а рабочим оказывается не
+// всегда первый в списке — гонка выясняет это сама.
+func resolveEndpoints(ctx context.Context, host, port string) ([]string, error) {
+	if ip, err := netip.ParseAddr(host); err == nil {
+		return []string{net.JoinHostPort(ip.String(), port)}, nil
+	}
+
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("ownerlog: адреса узла %s: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return nil, fmt.Errorf("ownerlog: у %s нет ни одного адреса", host)
+	}
+
+	out := make([]string, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, net.JoinHostPort(a.Unmap().String(), port))
+	}
+	return out, nil
 }
 
 // probe собирает копию журнала с добавленной записью, не трогая исходный.
