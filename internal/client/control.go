@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync/atomic"
 
+	"github.com/jaywehosl/quic-diver/internal/link"
 	"github.com/jaywehosl/quic-diver/internal/routing"
 )
 
@@ -23,6 +24,9 @@ type Control struct {
 	// половинчатой: браузер переиспользует открытые соединения, и часть трафика остаётся на
 	// прежнем маршруте, пока он их не отпустит.
 	streams *streams
+	// link — живая связь с узлом. Нужна, чтобы менять потолок скорости, не переподключаясь:
+	// сама скорость держится на одном числе внутри контроллера (см. internal/node/rate.go).
+	link atomic.Pointer[link.Link]
 }
 
 // NewControl заводит рычаги.
@@ -36,11 +40,46 @@ func (c *Control) attach(e *routing.Engine, log *slog.Logger) {
 	}
 }
 
+// attachLink связывает рычаги с живой связью.
+func (c *Control) attachLink(l *link.Link) {
+	if c != nil {
+		c.link.Store(l)
+	}
+}
+
 // detach отвязывает рычаги: клиент остановлен, двигать нечего.
 func (c *Control) detach() {
 	if c != nil {
 		c.engine.Store(nil)
+		c.link.Store(nil)
 	}
+}
+
+// SetSendMbps меняет потолок отправки клиента на живом соединении.
+//
+// Без переподключения: скорость BRUTAL держится на одном числе внутри контроллера, и менять
+// его можно на ходу. Рвать связь ради нового потолка означало бы обрывать человеку загрузку —
+// как раз тогда, когда он подбирает число под свой канал и меняет его подряд несколько раз.
+//
+// Отвечает false, когда клиент не запущен или связи сейчас нет: тогда число просто запомнит
+// приложение и применит при следующем запуске.
+func (c *Control) SetSendMbps(mbps int) bool {
+	if c == nil || mbps <= 0 {
+		return false
+	}
+	l := c.link.Load()
+	if l == nil {
+		return false
+	}
+	conn := l.Current()
+	if conn == nil {
+		return false
+	}
+	conn.QUIC().SetBrutalSendMbps(mbps)
+	if log := c.log.Load(); log != nil {
+		log.Info("потолок отдачи изменён на лету", "отдача_мбит", mbps)
+	}
+	return true
 }
 
 // track берёт поток на учёт, если рычаги есть.

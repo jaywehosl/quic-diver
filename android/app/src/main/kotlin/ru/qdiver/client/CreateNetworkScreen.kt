@@ -60,7 +60,7 @@ import kotlinx.coroutines.withContext
  * Поэтому порядок такой: параметры → пароль → развёртывание узла → включение узла → и только
  * потом ссылки, собранные из журнала, где узел уже записан.
  */
-private enum class Step { PARAMS, PASSWORD, DEPLOY, WAITING, LINKS, CONFIRM, DONE }
+private enum class Step { PARAMS, PASSWORD, DEPLOY, WAITING, LINKS, CONFIRM }
 
 @Composable
 fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
@@ -263,7 +263,18 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                 }
             }
 
-            Step.CONFIRM -> ConfirmStep(onConfirmed = { step = Step.DONE })
+            Step.CONFIRM -> ConfirmStep(
+                onConfirmed = onDone,
+                onCopyAgain = {
+                    // Обе разом: буфер один, а нужны обе, и человек на этом экране уже понял,
+                    // что сохранил не всё.
+                    val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    cm.setPrimaryClip(ClipData.newPlainText(
+                        "ссылки владельца",
+                        "Рабочая ссылка:\n$working\n\nЗапасная ссылка:\n$spare",
+                    ))
+                },
+            )
 
             Step.DEPLOY -> {
                 // Ключ собран из этих двух полей. Правка любого из них его обесценивает: строка
@@ -368,15 +379,6 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
                 onGiveUp = { step = Step.DEPLOY },
             )
 
-            Step.DONE -> {
-                Text("Сеть готова", fontSize = 18.sp, color = Green)
-                Text("Узел $adopted", fontSize = 12.sp, color = Grey,
-                    modifier = Modifier.padding(top = 8.dp))
-                Hint("Клиенты заводятся на экране управления; ссылка каждому выдаётся своя.")
-                Button(onClick = onDone, modifier = Modifier.fillMaxWidth().padding(top = 20.dp)) {
-                    Text("Готово")
-                }
-            }
         }
     }
 }
@@ -389,9 +391,10 @@ fun CreateNetworkScreen(prefs: Prefs, onBack: () -> Unit, onDone: () -> Unit) {
  * читая ничего не стоит. Потерять её нельзя, а восстановления нет и не будет (§2.2).
  */
 @Composable
-private fun ConfirmStep(onConfirmed: () -> Unit) {
+private fun ConfirmStep(onConfirmed: () -> Unit, onCopyAgain: () -> Unit) {
     var left by remember { mutableStateOf(15) }
     var checked by remember { mutableStateOf(false) }
+    var copied by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (left > 0) {
@@ -426,7 +429,17 @@ private fun ConfirmStep(onConfirmed: () -> Unit) {
         onClick = onConfirmed,
         enabled = checked && left == 0,
         modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-    ) { Text("Дальше") }
+    ) { Text("Готово") }
+
+    // Назад отсюда пути нет: узел уже в сети, клиент подключён, и «отменить» тут нечего. А вот
+    // сохранить ссылки заново человек может захотеть — на этом экране он как раз и понимает,
+    // что скопировал не всё.
+    OutlinedButton(
+        onClick = { onCopyAgain(); copied = true },
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    ) { Text(if (copied) "Обе ссылки в буфере" else "Нет, скопировать ещё раз") }
+    Hint("Обе разом, с подписями. Дальше этого экрана ссылки больше не показываются: запасной" +
+        " ключ с устройства уже стёрт.")
 }
 
 /**
@@ -534,7 +547,6 @@ private fun stepHint(step: Step): String = when (step) {
     Step.WAITING -> "Шаг 4 из 5 · включение узла"
     Step.LINKS -> "Шаг 5 из 5 · две ссылки владельца"
     Step.CONFIRM -> "Шаг 5 из 5 · подтверждение"
-    Step.DONE -> "Готово"
 }
 
 @Composable

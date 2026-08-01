@@ -55,6 +55,7 @@ fun SettingsScreen(prefs: Prefs, onBack: () -> Unit, onWiped: () -> Unit) {
     var brutal by remember { mutableStateOf(if (prefs.brutalUp > 0) prefs.brutalUp.toString() else "") }
     var confirmWipe by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf("") }
+    var applied by remember { mutableStateOf("") }
 
     var saved by remember { mutableStateOf(Core.savedNetwork()) }
     var refreshing by remember { mutableStateOf(false) }
@@ -95,12 +96,29 @@ fun SettingsScreen(prefs: Prefs, onBack: () -> Unit, onWiped: () -> Unit) {
             onValueChange = { value ->
                 brutal = value.filter { it.isDigit() }
                 prefs.brutalUp = brutal.toIntOrNull() ?: 0
+                applied = ""
             },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             placeholder = { Text("Мбит/с, пусто — как скажет сеть") },
             modifier = Modifier.fillMaxWidth(),
         )
+        // Кнопка нужна, потому что иначе непонятно, действует ли введённое: число меняется на
+        // лету, а поле молчит, и человек не отличает «применилось» от «сохранилось на потом».
+        OutlinedButton(
+            onClick = {
+                val mbps = brutal.toIntOrNull() ?: 0
+                applied = when {
+                    mbps <= 0 -> "потолок снят: работает то, что скажет сеть — со следующего подключения"
+                    Core.setBrutalUp(mbps) -> "применено сразу, $mbps Мбит/с"
+                    else -> "запомнено: применится при подключении"
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        ) { Text("Применить") }
+        if (applied.isNotEmpty()) {
+            Text(applied, fontSize = 12.sp, color = Green, modifier = Modifier.padding(top = 4.dp))
+        }
         Hint(
             if (net.brutalUpMbps <= 0)
                 "Потолок отдачи. Сеть его не задаёт — работает обычный Cubic. Число обязано" +

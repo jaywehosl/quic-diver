@@ -106,6 +106,17 @@ func (l *Link) Conn(ctx context.Context) (*node.Conn, error) {
 	}
 }
 
+// Current отдаёт текущее соединение, не дожидаясь его появления.
+//
+// Пустое означает, что связи сейчас нет — идёт гонка либо клиент только запустился. Тем, кому
+// соединение нужно для работы, годится Conn: он подождёт. Здесь же ждать нечего — потолок
+// скорости выставится сам при следующем соединении.
+func (l *Link) Current() *node.Conn {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.conn
+}
+
 // Run держит связь, пока жив контекст.
 func (l *Link) Run(ctx context.Context) error {
 	defer l.shutdown()

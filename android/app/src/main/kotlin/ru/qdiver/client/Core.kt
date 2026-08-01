@@ -144,6 +144,15 @@ object Core {
     /** Переключает умолчание на лету. false означает, что клиент не запущен. */
     fun setViaExit(on: Boolean): Boolean = Mobile.setViaExit(on)
 
+    /**
+     * Задаёт потолок отдачи. Ноль означает «как скажет сеть».
+     *
+     * При работающем клиенте применяется сразу, без переподключения. Отвечает true, если
+     * применилось на живой связи.
+     */
+    fun setBrutalUp(mbps: Int): Boolean =
+        Mobile.setBrutalUp(if (mbps > 0) mbps.toLong() else -1L)
+
     fun setVerbose(on: Boolean) = Mobile.setVerbose(on)
 }
 

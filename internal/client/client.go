@@ -163,9 +163,9 @@ func Run(ctx context.Context, o Options) error {
 	// Клиент шлёт «вверх»: столько, сколько отдаёт его канал (решение 006). Число приходит
 	// из сети, но последнее слово за человеком: свой канал он знает лучше администратора,
 	// сидящего в другой стране.
-	sendMbps := net.settings.BrutalUpMbps
+	sendMbps, rateFrom := net.settings.BrutalUpMbps, "сеть"
 	if o.BrutalUp >= 0 {
-		sendMbps = o.BrutalUp
+		sendMbps, rateFrom = o.BrutalUp, "человек"
 	}
 
 	conn, err := link.New(link.Config{
@@ -182,10 +182,12 @@ func Run(ctx context.Context, o Options) error {
 	})
 	switch {
 	case sendMbps > 0:
-		log.Info("BRUTAL включён", "отдача_мбит", sendMbps,
-			"приём_мбит", net.settings.BrutalDownMbps)
+		// Источник числа виден в журнале намеренно: «отдача 1000» ничего не говорит о том,
+		// применилось ли то, что человек ввёл в поле, или взято сетевое.
+		log.Info("BRUTAL включён", "отдача_мбит", sendMbps, "источник", rateFrom,
+			"приём_мбит_из_сети", net.settings.BrutalDownMbps)
 	case net.settings.BrutalUpMbps > 0:
-		log.Info("BRUTAL выключен флагом, хотя сеть его предлагала",
+		log.Info("BRUTAL выключен человеком, хотя сеть предлагала",
 			"предлагали_мбит", net.settings.BrutalUpMbps)
 	}
 	if err != nil {
@@ -193,6 +195,8 @@ func Run(ctx context.Context, o Options) error {
 	}
 
 	memory.link = conn
+	// Потолок скорости можно менять на лету: рычагам нужна живая связь.
+	o.Control.attachLink(conn)
 
 	linkCtx, stopLink := context.WithCancel(ctx)
 	defer stopLink()
