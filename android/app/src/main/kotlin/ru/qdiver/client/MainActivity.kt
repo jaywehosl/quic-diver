@@ -27,7 +27,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.view.WindowCompat
 
 /** Куда смотрит человек прямо сейчас. */
-enum class Screen { SETUP, CREATE, MAIN, ROUTING, SETTINGS }
+enum class Screen { SETUP, CREATE, MAIN }
 
 class MainActivity : ComponentActivity() {
 
@@ -100,11 +100,9 @@ class MainActivity : ComponentActivity() {
     private fun App() {
         val log = remember { Journal }
 
-        BackHandler(enabled = screen != Screen.MAIN && screen != Screen.SETUP) {
-            // Из создания сети «назад» ведёт на первый экран, а не на главный: главного ещё
-            // нет — сети нет тоже.
-            screen = if (screen == Screen.CREATE) Screen.SETUP else Screen.MAIN
-        }
+        // Из создания сети «назад» ведёт на первый экран, а не на главный: главного ещё нет —
+        // сети нет тоже. Внутри Shell «назад» обрабатывается им самим.
+        BackHandler(enabled = screen == Screen.CREATE) { screen = Screen.SETUP }
 
         when (screen) {
             Screen.SETUP -> SetupScreen(
@@ -117,18 +115,12 @@ class MainActivity : ComponentActivity() {
                 onBack = { screen = Screen.SETUP },
                 onDone = { screen = Screen.MAIN },
             )
-            Screen.MAIN -> MainScreen(
+            // Дальше экранов нет — есть одна раскладка со свайпами во все стороны (Shell).
+            else -> Shell(
                 prefs = prefs,
                 journal = log,
                 onConnect = ::connect,
                 onDisconnect = ::disconnect,
-                onRouting = { screen = Screen.ROUTING },
-                onSettings = { screen = Screen.SETTINGS },
-            )
-            Screen.ROUTING -> RoutingScreen(prefs) { screen = Screen.MAIN }
-            Screen.SETTINGS -> SettingsScreen(
-                prefs = prefs,
-                onBack = { screen = Screen.MAIN },
                 onWiped = { screen = Screen.SETUP },
             )
         }

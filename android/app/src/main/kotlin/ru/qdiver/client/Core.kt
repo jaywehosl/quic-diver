@@ -135,6 +135,51 @@ object Core {
     /** Стирает сеть с устройства: журнал, ключ владельца, запомненные узлы. */
     fun wipeOwner() = runCatching { Mobile.wipeOwner() }.getOrNull()
 
+    // ── управление сетью ────────────────────────────────────────────────────────────────
+    //
+    // Каждая правка — подписанная запись в журнал и сверка с живым узлом. Ошибка «сеть пока о
+    // ней не знает» означает, что запись уже сделана, а разнести её не вышло: узел получит её
+    // от соседей. Поэтому все методы возвращают причину строкой, а не бросают: экран разводит
+    // беду и предупреждение по цвету, а не по наличию.
+
+    fun clients(): List<ClientInfo> = ClientInfo.parseList(Mobile.clients())
+
+    fun nodes(): List<NodeInfo> = NodeInfo.parseList(Mobile.nodes())
+
+    fun networkSettings(): NetSettings = NetSettings.parse(Mobile.networkSettings())
+
+    /** Заводит клиента и отдаёт его ссылку. Долгий вызов: шифрование и связь с узлом. */
+    fun addClient(
+        id: String,
+        label: String,
+        limitGB: Int,
+        devices: Int,
+        days: Int,
+        period: String,
+        password: String,
+    ): String = Mobile.addClient(id, label, limitGB.toLong(), devices.toLong(), days.toLong(), period, password)
+
+    fun reissueClient(id: String, password: String): String = Mobile.reissueClient(id, password)
+
+    fun suspendClient(id: String, on: Boolean): String? = fail { Mobile.suspendClient(id, on) }
+
+    fun revokeClient(id: String): String? = fail { Mobile.revokeClient(id) }
+
+    fun updateNode(id: String, role: String): String? = fail { Mobile.updateNode(id, role) }
+
+    fun revokeNode(id: String): String? = fail { Mobile.revokeNode(id) }
+
+    fun setNetworkSettings(up: Int, down: Int, mesh: Int, dns1: String, dns2: String): String? =
+        fail { Mobile.setNetworkSettings(up.toLong(), down.toLong(), mesh.toLong(), dns1, dns2) }
+
+    fun flushDNS(): String? = fail { Mobile.flushDNS() }
+
+    fun syncNetwork(): String? = fail { Mobile.syncNetwork() }
+
+    /** Выполняет действие и отдаёт причину неудачи либо null. */
+    private inline fun fail(block: () -> Unit): String? =
+        runCatching { block(); null }.getOrElse { it.message ?: "не вышло" }
+
     /** Применяет правила к работающему клиенту. Возвращает причину отказа либо null. */
     fun applyRules(json: String): String? = runCatching {
         Mobile.setRules(json)
@@ -180,6 +225,15 @@ data class Status(
     /** Доля израсходованного лимита от нуля до единицы. Ноль, когда лимита нет. */
     val limitFraction: Float
         get() = if (limitBytes <= 0) 0f else (usageTotal.toFloat() / limitBytes).coerceAtMost(1f)
+
+    /**
+     * Задержка до входного узла.
+     *
+     * Пока заглушка: кадры ping/pong в управляющем канале объявлены, но измерение не сделано.
+     * Место на экране под него занято намеренно — чтобы разметка была настоящей, а не поехала
+     * потом, когда число появится.
+     */
+    fun pingText(): String = "— мс"
 
     /** Сколько держится связь. Пустая строка, когда связи нет. */
     fun uptime(): String {
@@ -345,6 +399,104 @@ data class Owner(
         }.getOrDefault(Owner())
     }
 }
+
+/** Клиент сети, каким его видит владелец. */
+data class ClientInfo(
+    val id: String,
+    val label: String = "",
+    val suspended: Boolean = false,
+    val limitBytes: Long = 0,
+    val period: String = "",
+    val devices: Int = 0,
+    val expiresUnix: Long = 0,
+) {
+    /** Строка под именем: лимиты и срок, человеческим языком. */
+    fun describe(): String {
+        val parts = mutableListOf<String>()
+        parts += if (limitBytes > 0) {
+            bytes(limitBytes) + if (period.isEmpty()) "" else " / ${periodName(period)}"
+        } else "без потолка"
+        if (devices > 0) parts += "устройств $devices"
+        if (expiresUnix > 0) {
+            val left = expiresUnix - System.currentTimeMillis() / 1000
+            parts += if (left > 0) "ещё ${left / 86400} дн" else "срок вышел"
+        }
+        return parts.joinToString(" · ")
+    }
+
+    companion object {
+        fun parseList(json: String): List<ClientInfo> = runCatching {
+            val arr = JSONArray(json)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                ClientInfo(
+                    id = o.optString("id"),
+                    label = o.optString("label"),
+                    suspended = o.optBoolean("suspended"),
+                    limitBytes = o.optLong("limit_bytes"),
+                    period = o.optString("period"),
+                    devices = o.optInt("devices"),
+                    expiresUnix = o.optLong("expires_unix"),
+                )
+            }
+        }.getOrDefault(emptyList())
+
+        private fun periodName(p: String) = when (p) {
+            "daily" -> "сутки"
+            "weekly" -> "неделя"
+            "monthly" -> "месяц"
+            else -> p
+        }
+    }
+}
+
+/** Узел сети, каким его видит владелец. Выходные здесь есть — это его экран, а не клиента. */
+data class NodeInfo(
+    val id: String,
+    val domain: String = "",
+    val roles: List<String> = emptyList(),
+    val endpoints: List<String> = emptyList(),
+) {
+    companion object {
+        fun parseList(json: String): List<NodeInfo> = runCatching {
+            val arr = JSONArray(json)
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                NodeInfo(
+                    id = o.optString("id"),
+                    domain = o.optString("domain"),
+                    roles = o.optJSONArray("roles").toList(),
+                    endpoints = o.optJSONArray("endpoints").toList(),
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+}
+
+/** Параметры сети: потолки и резолверы. */
+data class NetSettings(
+    val up: Int = 0,
+    val down: Int = 0,
+    val mesh: Int = 0,
+    val dnsPrimary: String = "",
+    val dnsSecondary: String = "",
+) {
+    companion object {
+        fun parse(json: String): NetSettings = runCatching {
+            val o = JSONObject(json)
+            NetSettings(
+                up = o.optInt("brutal_up_mbps"),
+                down = o.optInt("brutal_down_mbps"),
+                mesh = o.optInt("brutal_mesh_mbps"),
+                dnsPrimary = o.optString("dns_primary"),
+                dnsSecondary = o.optString("dns_secondary"),
+            )
+        }.getOrDefault(NetSettings())
+    }
+}
+
+private fun JSONArray?.toList(): List<String> =
+    if (this == null) emptyList() else (0 until length()).map { optString(it) }
 
 /** Состояние баз geosite и geoip. */
 data class Geo(

@@ -3,7 +3,9 @@ package ru.qdiver.client
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,10 +19,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Icon
@@ -31,11 +31,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
-import androidx.compose.material3.SwipeToDismissBox
-import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -67,6 +64,7 @@ fun RoutingScreen(prefs: Prefs, onBack: () -> Unit) {
     val geo = remember { Core.geo() }
 
     var editing by remember { mutableStateOf<Int?>(null) }
+    var menu by remember { mutableStateOf<Int?>(null) }
     var adding by remember { mutableStateOf<Kind?>(null) }
     var confirmReset by remember { mutableStateOf(false) }
 
@@ -88,7 +86,7 @@ fun RoutingScreen(prefs: Prefs, onBack: () -> Unit) {
                     modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
                 )
                 Text(
-                    "Свайп вправо — включить или выключить, влево — удалить. Тап — выбрать действие.",
+                    "Тап — куда пускать. Долгий тап — включить, выключить, удалить, соблюдать всегда.",
                     fontSize = 11.sp,
                     color = Grey,
                     modifier = Modifier.padding(bottom = 8.dp),
@@ -118,24 +116,7 @@ fun RoutingScreen(prefs: Prefs, onBack: () -> Unit) {
                         rule = rule,
                         geoMissing = geo.missing,
                         onTap = { editing = index },
-                        onToggle = {
-                            rules[index] = rule.copy(off = !rule.off)
-                            save()
-                        },
-                        onDelete = {
-                            val gone = rules.removeAt(index)
-                            save()
-                            scope.launch {
-                                val res = snackbar.showSnackbar(
-                                    message = "правило удалено",
-                                    actionLabel = "вернуть",
-                                )
-                                if (res == SnackbarResult.ActionPerformed) {
-                                    rules.add(index.coerceAtMost(rules.size), gone)
-                                    save()
-                                }
-                            }
-                        },
+                        onMenu = { menu = index },
                     )
                     HorizontalDivider(color = Color(0x14000000))
                 }
@@ -177,14 +158,51 @@ fun RoutingScreen(prefs: Prefs, onBack: () -> Unit) {
             ActionDialog(
                 rule = rules[index],
                 onDismiss = { editing = null },
-                onPick = { act, force ->
-                    rules[index] = rules[index].copy(action = act, force = force)
+                onPick = { act ->
+                    rules[index] = rules[index].copy(action = act)
                     save()
                     editing = null
                 },
             )
         } else {
             editing = null
+        }
+    }
+
+    menu?.let { index ->
+        if (index < rules.size) {
+            val rule = rules[index]
+            RuleMenu(
+                rule = rule,
+                onDismiss = { menu = null },
+                onToggleForce = {
+                    rules[index] = rule.copy(force = !rule.force)
+                    save()
+                    menu = null
+                },
+                onToggleOff = {
+                    rules[index] = rule.copy(off = !rule.off)
+                    save()
+                    menu = null
+                },
+                onDelete = {
+                    val gone = rules.removeAt(index)
+                    save()
+                    menu = null
+                    scope.launch {
+                        val res = snackbar.showSnackbar(
+                            message = "правило удалено",
+                            actionLabel = "вернуть",
+                        )
+                        if (res == SnackbarResult.ActionPerformed) {
+                            rules.add(index.coerceAtMost(rules.size), gone)
+                            save()
+                        }
+                    }
+                },
+            )
+        } else {
+            menu = null
         }
     }
 
@@ -226,65 +244,30 @@ fun RoutingScreen(prefs: Prefs, onBack: () -> Unit) {
 }
 
 /**
- * Строка правила со свайпами.
+ * Строка правила: тап открывает редактор, долгий тап — меню действий.
  *
- * Вправо — включить или выключить, влево — удалить. Оба жеста показывают себя фоном и сдвигом:
- * движение без отклика человек считает промахом и повторяет, пока не сделает лишнего.
+ * Свайпов здесь больше нет, и не по прихоти: горизонтальным свайпом теперь листаются экраны, а
+ * два жеста в одном направлении спорят всегда — либо строка съест переход, либо переход съест
+ * строку. Долгий тап ни с чем не конфликтует и вдобавок вмещает больше двух действий.
  */
+// combinedClickable до сих пор помечен экспериментальным, хотя живёт в библиотеке годами и
+// используется всюду. Пометка нужна только компилятору; поведение у него устоявшееся.
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun RuleRow(
     rule: Rule,
     geoMissing: Boolean,
     onTap: () -> Unit,
-    onToggle: () -> Unit,
-    onDelete: () -> Unit,
+    onMenu: () -> Unit,
 ) {
-    val state = rememberSwipeToDismissBoxState(
-        confirmValueChange = { value ->
-            when (value) {
-                SwipeToDismissBoxValue.StartToEnd -> {
-                    onToggle()
-                    // false: строка возвращается на место — она не исчезла, а сменила вид.
-                    false
-                }
-                SwipeToDismissBoxValue.EndToStart -> {
-                    onDelete()
-                    true
-                }
-                else -> false
-            }
-        }
-    )
-
-    SwipeToDismissBox(
-        state = state,
-        backgroundContent = {
-            val toEnd = state.dismissDirection == SwipeToDismissBoxValue.StartToEnd
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(56.dp)
-                    .background(if (toEnd) Green.copy(alpha = 0.15f) else Red.copy(alpha = 0.15f))
-                    .padding(horizontal = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = if (toEnd) Arrangement.Start else Arrangement.End,
-            ) {
-                if (toEnd) {
-                    Text(if (rule.off) "включить" else "выключить", color = Green, fontSize = 13.sp)
-                } else {
-                    Icon(Icons.Default.Delete, contentDescription = "удалить", tint = Red)
-                }
-            }
-        },
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .combinedClickable(onClick = onTap, onLongClick = onMenu)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .clickable(onClick = onTap)
-                .padding(vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
             Box(
                 Modifier
                     .size(8.dp)
@@ -309,20 +292,66 @@ private fun RuleRow(
                     modifier = Modifier.size(14.dp).padding(end = 2.dp),
                 )
             }
-            Text(
-                rule.action.words,
-                fontSize = 12.sp,
-                color = if (rule.off) Grey else colorOf(rule.action),
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
+        Text(
+            rule.action.words,
+            fontSize = 12.sp,
+            color = if (rule.off) Grey else colorOf(rule.action),
+            modifier = Modifier.padding(start = 8.dp),
+        )
     }
 }
 
+/**
+ * Меню действий по долгому тапу.
+ *
+ * «Соблюдать всегда» живёт только здесь, а не в редакторе и не при добавлении: свойство редкое,
+ * и место ему рядом с остальными разовыми действиями, а не в каждом окне создания правила.
+ */
 @Composable
-private fun ActionDialog(rule: Rule, onDismiss: () -> Unit, onPick: (Act, Boolean) -> Unit) {
-    var force by remember { mutableStateOf(rule.force) }
+private fun RuleMenu(
+    rule: Rule,
+    onDismiss: () -> Unit,
+    onToggleForce: () -> Unit,
+    onToggleOff: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(rule.title) },
+        text = {
+            Column {
+                Text(
+                    if (rule.force) "Сейчас соблюдается всегда: не перебивается никаким другим правилом."
+                    else "Обычное правило: сильнее его окажется правило по имени сайта.",
+                    fontSize = 12.sp,
+                    color = Grey,
+                )
+            }
+        },
+        confirmButton = {
+            Column {
+                TextButton(onClick = onToggleForce) {
+                    Text(if (rule.force) "Снять «соблюдать всегда»" else "Соблюдать всегда")
+                }
+                TextButton(onClick = onToggleOff) {
+                    Text(if (rule.off) "Включить" else "Выключить")
+                }
+                TextButton(onClick = onDelete) { Text("Удалить", color = Red) }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}
 
+/**
+ * Редактор правила: куда пускать поток.
+ *
+ * «Соблюдать всегда» отсюда убрано намеренно — оно живёт в меню по долгому тапу. Свойство
+ * редкое, а место в окне, которое открывают на каждое правило, стоит дорого: человек читает
+ * лишнюю строку каждый раз, а пользуется ею раз в месяц.
+ */
+@Composable
+private fun ActionDialog(rule: Rule, onDismiss: () -> Unit, onPick: (Act) -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(rule.title) },
@@ -330,27 +359,25 @@ private fun ActionDialog(rule: Rule, onDismiss: () -> Unit, onPick: (Act, Boolea
             Column {
                 Act.entries.forEach { act ->
                     Row(
-                        Modifier.fillMaxWidth().clickable { onPick(act, force) }.padding(vertical = 8.dp),
+                        Modifier.fillMaxWidth().clickable { onPick(act) }.padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        RadioButton(selected = rule.action == act, onClick = { onPick(act, force) })
+                        RadioButton(selected = rule.action == act, onClick = { onPick(act) })
                         Text(act.words, Modifier.padding(start = 8.dp), color = colorOf(act))
                     }
                 }
-                HorizontalDivider(Modifier.padding(vertical = 8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(checked = force, onCheckedChange = { force = it })
-                    Text("соблюдать всегда", Modifier.padding(start = 8.dp), fontSize = 14.sp)
+                if (rule.force) {
+                    Text(
+                        "Соблюдается всегда. Снять — долгим тапом по строке.",
+                        fontSize = 11.sp,
+                        color = Amber,
+                        modifier = Modifier.padding(top = 8.dp),
+                    )
                 }
-                Text(
-                    "Такое правило не перебивается никаким другим — даже правилом по имени сайта.",
-                    fontSize = 11.sp,
-                    color = Grey,
-                )
             }
         },
-        confirmButton = { TextButton(onClick = { onPick(rule.action, force) }) { Text("Готово") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+        confirmButton = {},
     )
 }
 
